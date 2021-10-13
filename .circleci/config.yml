@@ -1,31 +1,29 @@
 version: 2
 jobs:
-  setup_dependencies:
-    docker:
-      - image: circleci/python:3.8.1
-    steps:
-      - checkout
-      - restore_cache:
-          key: deps-{{checksum "Pipfile.lock"}} # pipenvのため、ここがコケるかも
-      - run:
-          command: |
-            pipenv install requirements.txt
-      - save_cache:
-          key: deps-{{checksum "Pipfile.lock"}}
-          paths:
-            - "~/.local"
-
-test:
-  docker:
-    - image: circleci/python:3.8.1
-  steps:
-    - checkout
-    - restore_cache:
-        key: deps-{{checksum "Pipfile.lock"}}
-    - run:
-        command: |
-          python -m -unittest -v
-
+ setup_dependencies:
+   docker:
+     - image: circleci/python:3.8.1
+   steps:
+     - checkout
+     - restore_cache:
+         key: deps-{{ checksum "Pipfile.lock" }}
+     - run:
+         command: |
+           pip install --user -r requirements.lock
+     - save_cache:
+         key: deps-{{ checksum "Pipfile.lock" }}
+         paths:
+           - "~/.local"
+ test:
+   docker:
+     - image: circleci/python:3.8.1
+   steps:
+     - checkout
+     - restore_cache:
+         key: deps-{{ checksum "Pipfile.lock" }}
+     - run:
+         command: |
+           python -m unittest discover tests -v
 workflows:
   version: 2
   all:
