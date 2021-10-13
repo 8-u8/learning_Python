@@ -36,7 +36,8 @@ jobs:
          command: |
            sudo apt install pipenv
            pipenv install
-           pipenv run python -m unittest -v
+           pipenv run 
+           python3 -m unittest -v
    environment:
      PYTHONPATH: /home/circleci/project/src
 
