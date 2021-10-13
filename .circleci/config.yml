@@ -5,6 +5,8 @@ jobs:
      - image: circleci/python:3.8.1
    steps:
      - checkout
+     - run: sudo chown -R circleci:circleci /usr/local/bin
+     - run: sudo chown -R circleci:circleci /usr/local/lib/python3.8/site-packages
      - restore_cache:
          key: deps-{{ checksum "Pipfile.lock" }}
      - run:
@@ -14,20 +16,23 @@ jobs:
      - save_cache:
          key: deps-{{ checksum "Pipfile.lock" }}
          paths:
-           - "~/.local"
+          - ".venv"
+          - "/usr/local/bin"
+          - "/usr/local/lib/python3.6/site-packages"
  test:
    docker:
      - image: circleci/python:3.8.1
    steps:
      - checkout
+     - run: sudo chown -R circleci:circleci /usr/local/bin
+     - run: sudo chown -R circleci:circleci /usr/local/lib/python3.8/site-packages     
      - restore_cache:
          key: deps-{{ checksum "Pipfile.lock" }}
      - run:
          command: |
-           sudo pip install pipenv
-           pipenv install
-           pipenv run 
-           python -m unittest -v
+           pipenv run python3 -m unittest -v
+   parallelism: 4
+
 workflows:
   version: 2
   all:
