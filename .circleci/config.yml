@@ -34,8 +34,11 @@ jobs:
          key: deps-{{ checksum "Pipfile.lock" }}
      - run:
          command: |
-           pipenv run python3 -m unittest -v
-   parallelism: 4
+           sudo apt install pipenv
+           pipenv install
+           pipenv run python -m unittest -v
+   environment:
+     PYTHONPATH: /home/circleci/project/src
 
 workflows:
   version: 2
