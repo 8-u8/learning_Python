@@ -26,7 +26,7 @@ jobs:
          command: |
            sudo pip install pipenv
            pipenv install
-           pipenv shell 
+           pipenv run 
            python -m unittest -v
 workflows:
   version: 2
