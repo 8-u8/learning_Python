@@ -21,10 +21,10 @@ test:
   steps:
     - checkout
     - restore_cache:
-      key: deps-{{checksum "Pipfile.lock"}}
+        key: deps-{{checksum "Pipfile.lock"}}
     - run:
-      command: |
-        python -m -unittest -v
+        command: |
+          python -m -unittest -v
 
 workflows:
   version: 2
