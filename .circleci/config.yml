@@ -10,7 +10,7 @@ jobs:
      - run:
          command: |
            sudo pip install pipenv
-           pipenv install requirements.txt
+           pipenv install
      - save_cache:
          key: deps-{{ checksum "Pipfile.lock" }}
          paths:
