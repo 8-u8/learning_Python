@@ -24,7 +24,10 @@ jobs:
          key: deps-{{ checksum "Pipfile.lock" }}
      - run:
          command: |
-           pipenv run python -m unittest -v
+           sudo pip install pipenv
+           pipenv install
+           pipenv run 
+           python -m unittest -v
 workflows:
   version: 2
   all:
