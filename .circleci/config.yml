@@ -19,6 +19,10 @@ jobs:
           - ".venv"
           - "/usr/local/bin"
           - "/usr/local/lib/python3.6/site-packages"
+   environment:
+     PYTHONPATH: /home/circleci/project/src
+ 
+ 
  test:
    docker:
      - image: circleci/python:3.8.1
