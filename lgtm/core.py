@@ -2,11 +2,13 @@ import click
 
 
 @click.command()
-def cli():
+@click.option('--message', '-m', default='LGTM',
+              show_default=True, help='画像に乗せる文字列')
+def cli(keyword, message):
     '''
     LGTM自動生成ツール
     '''
-    lgtm()
+    lgtm(keyword, message)
     click.echo('lgtm')
 
 
