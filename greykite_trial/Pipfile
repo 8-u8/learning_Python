@@ -11,6 +11,7 @@ flake8 = "*"
 ipython = "*"
 jupyter = "*"
 kaleido = "*"
+autopep8 = "*"
 
 [dev-packages]
 
