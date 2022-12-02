@@ -10,6 +10,9 @@ numpy = "*"
 pulp = "*"
 tqdm = "*"
 crypto = "*"
+pillow = "*"
+ipython = "*"
+jupyter = "*"
 
 [dev-packages]
 ipykernel = "*"
