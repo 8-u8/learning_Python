@@ -1,7 +1,7 @@
 from ortools.linear_solver import pywraplp
 # from ortools.init import pywrapinit
 
-
+# Todo: 放送大学での問題例とかを反映するのは在りかもしれない
 def LinearProgrammingExample():
     """線形計画問題の例"""
     # GLOPソルバでインスタンスを設定
@@ -17,18 +17,18 @@ def LinearProgrammingExample():
 
     # 制約条件を与える
     ## x + 2y <= 14.
-    solver.Add(x + 2 * y <= 14.0)
+    solver.Add(70 * x + 80 * y <= 3600.0)
 
     ## 3x - y >= 0.
-    solver.Add(3 * x - y >= 0.0)
+    solver.Add(90 * x + 110 * y <= 5000.0)
 
     ## x - y <= 2.
-    solver.Add(x - y <= 2.0)
+    # solver.Add(x - y <= 2.0)
 
     print('Number of constraints =', solver.NumConstraints())
 
     # 目的関数と最適化指標(最大化): 3x + 4y.
-    solver.Maximize(3 * x + 4 * y)
+    solver.Maximize(2 * x + 3 * y)
 
     # Solve the system.
     status = solver.Solve()
