@@ -33,7 +33,7 @@ def create_data_model():
 # %% 
 data = create_data_model()
 
-solver = pywraplp.Solver.CreateSolver('SCIP')
+solver = pywraplp.Solver.CreateSolver('GLOP')
 
 x = {}
 name_list = ['x11', 'x13', 'x22', 'x24', 'x25', 'x31', 'x33', 'x34', 
