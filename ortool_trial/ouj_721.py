@@ -14,18 +14,17 @@ def create_model():
         [0, 1, 0, 0, 0, 0, 0, 0], # const xB
         [-1, 0, 1, 0, 0, 0, 0, 0], # const xC-A
         [0, -1, 1, 0, 0, 0, 0, 0], # const xC-B
-        [0, -1, 0, 0, 0, 0, 0, 0], # const xD-B
+        [0, -1, 0, 1, 0, 0, 0, 0], # const xD-B
         [0, 0, -1, 0, 1, 0, 0, 0], # const xE-C
         [0, 0, -1, 0, 0, 1, 0, 0], # const xF-C
         [0, 0, 0, -1, 0, 1, 0, 0], # const xF-D
         [0, 0, 0, 0, -1, 0, 1, 0], # const xG-E
         [0, 0, 0, 0, 0, -1, 1, 0], # const xG-F
-        [0, 0, 0, 0, 0, 0, -1, 0]  # const xT
+        [0, 0, 0, 0, 0, 0, -1, 1]  # const xT
     ]
-    data['bounds'] = [999, 999, 999, 999, 999, 999,
-                      999, 999, 999, 999, 999]
+    data['bounds'] = [0, 0, 4, 5, 5, 7, 7, 7, 2, 9, 2]
 
-    data['obj_coeffs'] = [0, 0, 4, 5, 5, 7, 7, 7, 2, 9, 2]
+    data['obj_coeffs'] = [1, 1, 1, 1, 1, 1, 1, 1]
     data['num_vars'] = 8
     data['num_constraints'] = 11
 
@@ -34,7 +33,7 @@ def create_model():
 
 # %%
 data = create_model()
-solver = pywraplp.Solver.CreateSolver('SCIP')
+solver = pywraplp.Solver.CreateSolver('SAT')
 
 # init
 infinity = solver.infinity()
@@ -42,7 +41,7 @@ x = {}
 
 # define variables.
 for i in range(data['num_vars']):
-    x[i] = solver.NumVar(0, infinity, 'x[%i]' % i)
+    x[i] = solver.IntVar(0, infinity, 'x[%i]' % i)
     tmp_keys = list(x.keys())[i]
     x[name_list[i]] = x.pop(tmp_keys)
 
@@ -51,7 +50,7 @@ print('Numver of variables = ', solver.NumVariables())
 
 # %%
 for i in range(data['num_constraints']):
-    constraint = solver.RowConstraint(data['bounds'][i], '')
+    constraint = solver.RowConstraint(data['bounds'][i], infinity, '')
 
     for j in range(data['num_vars']):
         tmp_idx = list(x.keys())[j]
@@ -65,13 +64,13 @@ for j in range(data['num_vars']):
     tmp_idx = list(x.keys())[j]
     objective.SetCoefficient(x[tmp_idx], data['obj_coeffs'][j])
 
-objective.SetMaximization()
+objective.SetMinimization()
 
 # %%
 status = solver.Solve()
 
 # %%
-if True:#status == pywraplp.Solver.OPTIMAL:
+if status == pywraplp.Solver.OPTIMAL:
     print('Objective value =', solver.Objective().Value())
     for j in name_list:
         tmp_idx = j
