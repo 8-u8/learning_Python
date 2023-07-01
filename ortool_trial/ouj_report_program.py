@@ -23,7 +23,7 @@ def create_data_model():
         [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1]  # const10
     ]
     # the bounds of constraints.
-    data['bounds'] = [1,1,1,1,1]
+    data['bounds'] = [1, 1, 1, 1, 1]
     # the coefficients of objective function
     data['obj_coeffs'] = [5, 1, 2, 8, 7, 4, 6, 7, 9, 4, 7, 8, 6]
     data['num_vars'] = 13
