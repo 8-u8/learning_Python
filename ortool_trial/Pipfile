@@ -8,6 +8,7 @@ ortools = "*"
 ipython = "*"
 jupyter = "*"
 autopep8 = "*"
+pulp = "*"
 
 [dev-packages]
 
