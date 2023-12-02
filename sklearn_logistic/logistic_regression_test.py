@@ -19,11 +19,14 @@ y = iris_df['species'].map({'versicolor': 0, 'virginica': 1}) # versicolorをク
 
 # ロジスティック回帰モデルへのフィッティング
 clf = LogisticRegression(random_state=0).fit(X, y)
+clf.coef_
+# > array([[-0.39443136, -0.51327025,  2.93075043,  2.4170433 ]])
 
 # %% model via statsmodels
 logit_model = sm.Logit(y, X)
 logit_model.fit().params
 
+# it is not equal to sklearn with default parameters
 # Optimization terminated successfully.
 #          Current function value: 0.108399
 #          Iterations 10
