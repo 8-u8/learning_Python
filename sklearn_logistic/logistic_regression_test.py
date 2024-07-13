@@ -2,48 +2,98 @@
 import pandas as pd
 import numpy as np
 
+# import sample dataset
 import seaborn as sns
 
+# import modeling modules
 from sklearn.linear_model import LogisticRegression
 import statsmodels.api as sm
 
 ## copied from: https://note.com/smith_217/n/n46e5c43af10b?sub_rt=share_h
 # %% loading data
 iris_df = sns.load_dataset("iris")
-iris_df = iris_df[(iris_df['species']=='versicolor') | (iris_df['species']=='virginica')].reset_index(drop=True)
+iris_df = iris_df[(iris_df['species']=='versicolor') 
+                  | (iris_df['species']=='virginica')].reset_index(drop=True)
 
-# %% model with default parameters
-# 説明変数・目的変数の設定
-X = iris_df.drop("species",axis=1)# 説明変数
-y = iris_df['species'].map({'versicolor': 0, 'virginica': 1}) # versicolorをクラス0, virginicaをクラス1とする
+# %% utility function to comparison.
+def result_to_df(features, params):
+    out_dict = {
+        'features': features,
+        'params':params
+    }
 
-# ロジスティック回帰モデルへのフィッティング
-clf = LogisticRegression(random_state=0).fit(X, y)
-clf.coef_
-# > array([[-0.39443136, -0.51327025,  2.93075043,  2.4170433 ]])
+    out = pd.DataFrame(out_dict)
+    
+    return out
 
-# %% model via statsmodels
-logit_model = sm.Logit(y, X)
-logit_model.fit().params
+# %% settings target and features
+# features
+X = iris_df.drop("species",axis=1)
+# versicolor convert from category to binary values.
+y = iris_df['species'].map({'versicolor': 0, 'virginica': 1}) 
 
-# it is not equal to sklearn with default parameters
-# Optimization terminated successfully.
-#          Current function value: 0.108399
-#          Iterations 10
-# sepal_length    -6.327719
-# sepal_width     -6.618187
-# petal_length     8.433801
-# petal_width     10.282544
-# dtype: float64
+# logistic regression
+# assumption: no intercept.
+# %% baseline: logistic regression using statsmodels
+clf_statsmodels = sm.Logit(y, X)
+clf_statsmodels = clf_statsmodels.fit()
+statsmodels_params = result_to_df(features=clf_statsmodels.params.index.values,
+                                  params=clf_statsmodels.params.values)
+statsmodels_params
 
-# %% model via sklearn with small penalty weights
-clf02 = LogisticRegression(random_state=0, fit_intercept=False, C = 1e9).fit(X, y)
-clf02.coef_
+#      features     params
+# 0	sepal_length	-6.327719
+# 1	sepal_width	    -6.618187
+# 2	petal_length     8.433801
+# 3	petal_width 	10.282544
+
+#%% logistic regression using sklearn
+# Logistic regression from sklearn is L2 regularization by default.
+clf_sklearn_default = LogisticRegression(random_state=0, fit_intercept=False)
+clf_sklearn_default.fit(X, y)
+sklearn_default_params = result_to_df(features=X.columns.values,
+                                     params=clf_sklearn_default.coef_[0])
+sklearn_default_params
+# There are difference from statsmodels result.
+#   features	     params
+# 0	sepal_length	-1.863342
+# 1	sepal_width 	-1.646021
+# 2	petal_length     2.477247
+# 3	petal_width	     2.593144
+
+# %% modification 1: using small penalty weights
+clf_sklearn_low_penalty = LogisticRegression(
+                            random_state=0,
+                            fit_intercept=False,
+                            C = 1e9)
+clf_sklearn_low_penalty.fit(X, y)
+sklearn_low_penalty_params = result_to_df(features=X.columns.values,
+                                          params=clf_sklearn_low_penalty.coef_[0])
+sklearn_low_penalty_params
 # almost equal to estimate via statsmodels
-# > array([[-6.32771779, -6.61818115,  8.43379737, 10.28254174]])
 
-# %% model via sklearn with none penalty 
-clf03 = LogisticRegression(random_state=0, fit_intercept=False, penalty="none").fit(X, y)
-clf03.coef_
+#    features   	params
+# 0	sepal_length	-6.327718
+# 1	sepal_width 	-6.618181
+# 2	petal_length     8.433797
+# 3	petal_width 	10.282542
+
+# %% modification 2: set penalty as None.
+clf_sklearn_None_penalty = LogisticRegression(
+                              random_state=0,
+                              fit_intercept=False,
+                              penalty=None)
+
+clf_sklearn_None_penalty.fit(X, y)
+sklearn_None_penalty_params = result_to_df(features=X.columns.values,
+                                          params=clf_sklearn_None_penalty.coef_[0])
+sklearn_None_penalty_params
 # almost equal to estimate via statsmodels
-# > array([[-6.32771795, -6.61818131,  8.4337976 , 10.28254195]])
+# 	features	    params
+# 0	sepal_length	-6.327718
+# 1	sepal_width 	-6.618181
+# 2	petal_length     8.433798
+# 3	petal_width	    10.282542
+
+
+# %%
