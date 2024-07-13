@@ -1,0 +1,22 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+jax = "==0.4.20"
+jaxlib = "==0.4.20"
+lightweight-mmm = "==0.1.8"
+scipy = "==1.12.0"
+numpy = "*"
+pandas = "*"
+scikit-learn = "*"
+openpyxl = "*"
+ipykernel = "*"
+jupyter = "*"
+
+[dev-packages]
+ipykernel = "*"
+
+[requires]
+python_version = "3.10"
