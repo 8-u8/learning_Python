@@ -44,3 +44,79 @@ print(np.linalg.det(x))         # 行列式が0にならない
 y = np.array([[0, 2],           # 2×2の正方行列
               [0, 1]])
 print(np.linalg.det(y))         # 行列式が0になる
+
+
+# %% vector visualization
+
+s = np.array([0, 0])
+t = np.array([3, 2])
+
+fig = plt.figure()
+ax = fig.add_subplot(111)
+
+ax.quiver(
+    s[0],
+    s[1],
+    t[0],
+    t[1],
+    angles='xy',
+    scale_units='xy',
+    scale=1,
+    color='blue'
+)
+
+# set range and label of figures.
+ax.set_xlim([-3, 3])
+ax.set_ylim([-3, 3])
+ax.set_xlabel('x-axis')
+ax.set_ylabel('y-axis')
+ax.grid()
+ax.set_aspect('equal')
+
+plt.show()
+
+# %% linear transformation
+s = np.array([0, 0])
+x = np.array([3, 2])
+a = np.array([[2, -2],
+              [1, -2]])
+y = np.dot(a, x) # linear transformation
+
+
+
+
+fig = plt.figure()
+ax = fig.add_subplot(111)
+
+ax.quiver(
+    s[0],
+    s[1],
+    x[0],
+    x[1],
+    angles='xy',
+    scale_units='xy',
+    scale=1,
+    color='blue'
+)
+
+ax.quiver(
+    s[0],
+    s[1],
+    y[0],
+    y[1],
+    angles='xy',
+    scale_units='xy',
+    scale=1,
+    color='red'
+)
+
+
+# set range and label of figures.
+ax.set_xlim([-3, 3])
+ax.set_ylim([-3, 3])
+ax.set_xlabel('x-axis')
+ax.set_ylabel('y-axis')
+ax.grid()
+ax.set_aspect('equal')
+
+plt.show()
