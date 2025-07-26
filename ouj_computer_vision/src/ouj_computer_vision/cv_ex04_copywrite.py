@@ -120,3 +120,5 @@ ax.grid()
 ax.set_aspect('equal')
 
 plt.show()
+
+# %%
