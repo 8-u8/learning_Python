@@ -73,6 +73,10 @@ instance/
 # Scrapy stuff:
 .scrapy
 
+# uv files
+
+*.lock
+
 # Sphinx documentation
 docs/_build/
 
