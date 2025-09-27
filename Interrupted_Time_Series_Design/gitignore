@@ -1,4 +1,6 @@
-/dist/
+dist/
+model/
+output/
 *.toml
 .venv/
 __pycache__/
