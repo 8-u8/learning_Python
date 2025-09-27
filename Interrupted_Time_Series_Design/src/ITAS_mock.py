@@ -11,24 +11,42 @@ cigar = sm.datasets.get_rdataset("Cigar", "Ecdat").data
 
 def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
     # 古い時系列を削除、州を絞る
-    condition = (df.loc[:,'year'] >= 70) & (df.loc[:,'state'].isin([3,9,10,22,21,23,31,33,48]))
-    df_out = df.loc[condition,:].copy()
+    target_states = [3, 9, 10, 22, 21, 23, 31, 33, 48]
+    condition = (
+        (df.loc[:, 'year'] >= 70) & 
+        (df.loc[:, 'state'].isin(target_states))
+    )
+    df_out = df.loc[condition, :].copy()
 
     # stateをカテゴリに変換
-    df_out.loc[:,'area'] = df_out.loc[:,'state'].apply(lambda x: 'CA' if x == 5 else 'Rest of US')
+    df_out.loc[:, 'area'] = df_out.loc[:, 'state'].apply(
+        lambda x: 'CA' if x == 5 else 'Rest of US'
+    )
+    
     # yearの最小値を1として経過年数を作成する
-    df_out.loc[:,'time'] = df_out.loc[:,'year'] - df_out.loc[:,'year'].min() + 1
+    min_year = df_out.loc[:, 'year'].min()
+    df_out.loc[:, 'time'] = df_out.loc[:, 'year'] - min_year + 1
 
-    # 1980年を介入点として、  介入点Tとダミー変数Dを作成
-    df_out.loc[:,'T'] = (df_out.loc[:,'year'] == 80).astype(int)
-    df_out.loc[:,'D'] = (df_out.loc[:,'year'] >= 80).astype(int)
+    # 1980年を介入点として、介入点Tとダミー変数Dを作成
+    df_out.loc[:, 'T'] = (df_out.loc[:, 'year'] == 80).astype(int)
+    df_out.loc[:, 'D'] = (df_out.loc[:, 'year'] >= 80).astype(int)
 
     # 介入後の経過年数を作成
     # 1980年以前は0、1980年は1、1981年は2、...
-    df_out.loc[:,'time_after'] = df_out.loc[:,['state','D']].groupby('state').cumsum()['D']
+    groupby_cols = ['state', 'D']
+    df_out.loc[:, 'time_after'] = (
+        df_out.loc[:, groupby_cols]
+        .groupby('state')
+        .cumsum()['D']
+    )
     return df_out
 
 cigar_pp = preprocess_data(cigar)
+
+# %% template chunk: check data
+cigar_pp.loc[cigar_pp['state']== 3, ['year', 'time', 'D', 'time_after']]
+
+
 # %%
 # Python (statsmodels: NW標準誤差調整)
 # OLSモデルを使用し、標準誤差計算時に調整を行う
