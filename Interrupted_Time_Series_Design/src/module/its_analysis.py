@@ -5,55 +5,65 @@ Interrupted Time Series Analysis (ITAS) Package
 抽象化し、任意のデータに対して適用可能なクラスを提供します。
 
 Classes:
-    ITSDataPreprocessor: ITSに必要な変数を生成するクラス
-    ITSModel: OLSモデルを実行・管理するクラス  
+    ITSDataPreprocessor: ITSに必要な変数を生成するクラス（複数介入対応）
+    ITSModelBase: モデルの基底クラス
+    ITSModelOLS: OLSモデルを実行・管理するクラス
+    ITSModelSARIMAX: SARIMAXモデルを実行・管理するクラス
+    ITSModelProphet: Prophetモデルを実行・管理するクラス
     ITSVisualizer: 結果を可視化するクラス
 """
 
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
+from statsmodels.tsa.statespace.sarimax import SARIMAX
 import matplotlib.pyplot as plt
 import pickle
-from typing import Optional, List, Dict, Union, Any
+import optuna
+from prophet import Prophet
+from typing import Optional, List, Dict, Union, Any, Tuple
 from pathlib import Path
+from abc import ABC, abstractmethod
+import warnings
+
+warnings.filterwarnings('ignore')
 
 
 class ITSDataPreprocessor:
     """
-    Interrupted Time Series Designに必要な変数を生成するクラス
+    Interrupted Time Series Designに必要な変数を生成するクラス（複数介入対応）
 
     任意のデータから以下の変数を生成します：
     - t: 時系列の起点から終点までのカウントアップ
-    - T: 介入のあった単位時間のときに1、それ以外は0を示すダミー変数
-    - D: 介入のあった単位時間より前は0、介入のあった単位時間以降に1を示すダミー変数
-    - time_after: 介入後の経過時間を表すカウントアップ
+    - D_1, D_2, ..., D_P: 各介入期間のダミー変数
+    - timedelta_1, timedelta_2, ..., timedelta_P: 各介入後の経過時間
     - const: 切片項、全期間を通して1となる変数
     """
 
     def __init__(self,
                  time_column: str,
-                 intervention_point: Union[int, float],
+                 intervention_points: List[Union[int, float]],
                  group_column: Optional[str] = None):
         """
         ITSDataPreprocessorの初期化
 
         Args:
             time_column (str): 時間を表すカラム名
-            intervention_point (Union[int, float]): 介入が起こった時点の値
+            intervention_points (List[Union[int, float]]): 介入が起こった時点のリスト（昇順でソート済み）
             group_column (Optional[str]): グループを表すカラム名（州や地域など）
         """
         self.time_column = time_column
-        self.intervention_point = intervention_point
+        self.intervention_points = sorted(intervention_points)
         self.group_column = group_column
         self.processed_data: Optional[pd.DataFrame] = None
+        self.n_interventions = len(self.intervention_points)
 
     def fit_transform(self,
                       df: pd.DataFrame,
                       add_intercept: bool = True,
                       time_start_from_one: bool = True) -> pd.DataFrame:
         """
-        データにITS用の変数を追加して変換
+        データにITS用の変数を追加して変換（複数介入対応）
 
         Args:
             df (pd.DataFrame): 入力データフレーム
@@ -79,22 +89,37 @@ class ITSDataPreprocessor:
         else:
             df_out['t'] = df_out[self.time_column]
 
-        # 介入点ダミー (T): 介入のあった時点のみ1
-        df_out['T'] = (df_out[self.time_column] ==
-                       self.intervention_point).astype(int)
+        # 複数介入に対応したダミー変数の生成
+        for i in range(self.n_interventions):
+            intervention_point = self.intervention_points[i]
 
-        # 介入後ダミー (D): 介入時点以降は1
-        df_out['D'] = (df_out[self.time_column] >=
-                       self.intervention_point).astype(int)
+            # D_i: 介入期間のダミー変数
+            if i < self.n_interventions - 1:
+                # 次の介入点まで
+                next_intervention = self.intervention_points[i + 1]
+                df_out[f'D_{i+1}'] = (
+                    (df_out[self.time_column] >= intervention_point) &
+                    (df_out[self.time_column] < next_intervention)
+                ).astype(int)
+            else:
+                # 最後の介入以降すべて
+                df_out[f'D_{i+1}'] = (
+                    df_out[self.time_column] >= intervention_point
+                ).astype(int)
 
-        # 介入後経過時間 (time_after)
-        if self.group_column is not None:
-            # グループ別に計算
-            df_out['time_after'] = (df_out.groupby(self.group_column)['D']
-                                    .transform('cumsum'))
-        else:
-            # 全体で計算
-            df_out['time_after'] = df_out['D'].cumsum()
+            # timedelta_i: 介入後経過時間（介入期間中のみカウント）
+            if self.group_column is not None:
+                # グループ別に計算
+                df_out[f'timedelta_{i+1}'] = (
+                    df_out.groupby(self.group_column)[
+                        f'D_{i+1}'].transform('cumsum')
+                )
+            else:
+                # 全体で計算
+                df_out[f'timedelta_{i+1}'] = df_out[f'D_{i+1}'].cumsum()
+
+            # 介入期間外は0にリセット
+            df_out.loc[df_out[f'D_{i+1}'] != 1, f'timedelta_{i+1}'] = 0
 
         # 切片項の追加
         if add_intercept:
@@ -110,9 +135,16 @@ class ITSDataPreprocessor:
         Returns:
             List[str]: ITS変数名のリスト
         """
-        base_vars = ['t', 'D', 'time_after']
+        base_vars = ['t']
+
+        # 複数介入対応
+        for i in range(self.n_interventions):
+            base_vars.append(f'D_{i+1}')
+            base_vars.append(f'timedelta_{i+1}')
+
         if self.processed_data is not None and 'const' in self.processed_data.columns:
             base_vars.insert(0, 'const')
+
         return base_vars
 
     def validate_data(self, df: pd.DataFrame) -> bool:
@@ -136,36 +168,250 @@ class ITSDataPreprocessor:
             raise ValueError(f"グループカラム '{self.group_column}' がデータに存在しません")
 
         # 介入点の存在チェック
-        if self.intervention_point not in df[self.time_column].values:
-            raise ValueError(
-                f"介入点 '{self.intervention_point}' がデータの時間軸に存在しません")
+        for intervention_point in self.intervention_points:
+            if intervention_point not in df[self.time_column].values:
+                raise ValueError(
+                    f"介入点 '{intervention_point}' がデータの時間軸に存在しません")
 
         return True
 
 
-class ITSModel(ITSDataPreprocessor):
+class ITSModelBase(ITSDataPreprocessor, ABC):
     """
-    ITSDataPreprocessorを継承してstatsmodels.api.OLSを実行するクラス
+    ITS モデルの抽象基底クラス
 
-    共変量cooperateの有無を確認し、適切にモデル実行とモデル保存を行います。
+    全てのモデル（OLS, SARIMAX, Prophet）で共通のインターフェースを提供します。
     """
 
     def __init__(self,
                  time_column: str,
-                 intervention_point: Union[int, float],
+                 intervention_points: List[Union[int, float]],
                  group_column: Optional[str] = None):
         """
-        ITSModelの初期化
+        ITSModelBaseの初期化
 
         Args:
             time_column (str): 時間を表すカラム名
-            intervention_point (Union[int, float]): 介入が起こった時点の値
+            intervention_points (List[Union[int, float]]): 介入が起こった時点のリスト
             group_column (Optional[str]): グループを表すカラム名
         """
-        super().__init__(time_column, intervention_point, group_column)
-        self.model_results: Optional[sm.regression.linear_model.RegressionResultsWrapper] = None
+        super().__init__(time_column, intervention_points, group_column)
+        self.model_results: Optional[Any] = None
         self.feature_columns: Optional[List[str]] = None
         self.target_column: Optional[str] = None
+        self.model_type: str = "base"
+
+    @abstractmethod
+    def fit(self, df: pd.DataFrame, target_column: str, **kwargs) -> Any:
+        """
+        モデルをフィッティング（抽象メソッド）
+
+        Args:
+            df (pd.DataFrame): 入力データフレーム
+            target_column (str): 目的変数のカラム名
+            **kwargs: モデル固有のパラメータ
+
+        Returns:
+            Any: フィット結果
+        """
+        pass
+
+    @abstractmethod
+    def predict(self, df: Optional[pd.DataFrame] = None, **kwargs) -> Union[pd.Series, pd.DataFrame]:
+        """
+        予測値を計算（抽象メソッド）
+
+        Args:
+            df (Optional[pd.DataFrame]): 予測用データ
+            **kwargs: 予測時のオプション
+
+        Returns:
+            Union[pd.Series, pd.DataFrame]: 予測結果
+        """
+        pass
+
+    def predict_counterfactual(self,
+                               df: Optional[pd.DataFrame] = None,
+                               return_ci: bool = True) -> Union[pd.Series, pd.DataFrame]:
+        """
+        反実仮想（介入がなかった場合）の予測値を計算
+
+        Args:
+            df (Optional[pd.DataFrame]): 予測用データ（Noneの場合は学習データを使用）
+            return_ci (bool): 信頼区間を返すかどうか
+
+        Returns:
+            Union[pd.Series, pd.DataFrame]: 反実仮想予測結果
+        """
+        if df is None:
+            if self.processed_data is None:
+                raise ValueError("学習データが保存されていません。")
+            counterfactual_data = self.processed_data.copy()
+        else:
+            counterfactual_data = self.fit_transform(df)
+
+        # すべての介入変数を0にセット
+        for i in range(self.n_interventions):
+            counterfactual_data[f'D_{i+1}'] = 0
+            counterfactual_data[f'timedelta_{i+1}'] = 0
+
+        return self.predict(counterfactual_data, return_ci=return_ci, use_preprocessed=True)
+
+    def calculate_intervention_effect(self) -> pd.DataFrame:
+        """
+        介入効果をDataFrame形式で計算（集計値形式）
+
+        Returns:
+            pd.DataFrame: 介入効果の集計（Period, Actual_mean, Predicted_mean, Counterfactual_mean, Effect_mean）
+        """
+        if self.processed_data is None or self.model_results is None:
+            raise ValueError("モデルがフィットされていません。まずfitメソッドを実行してください。")
+
+        df = self.processed_data.copy()
+
+        # 実予測値
+        pred_actual = self.predict(return_ci=False)
+        if isinstance(pred_actual, pd.DataFrame):
+            pred_actual_values = pred_actual['mean'].values
+        elif isinstance(pred_actual, pd.Series):
+            pred_actual_values = pred_actual.values
+        else:
+            pred_actual_values = pred_actual
+
+        # 反実仮想予測値
+        pred_counterfactual = self.predict_counterfactual(return_ci=False)
+        if isinstance(pred_counterfactual, pd.DataFrame):
+            pred_counterfactual_values = pred_counterfactual['mean'].values
+        elif isinstance(pred_counterfactual, pd.Series):
+            pred_counterfactual_values = pred_counterfactual.values
+        else:
+            pred_counterfactual_values = pred_counterfactual
+
+        # 長さを合わせる
+        n = len(df)
+        if len(pred_actual_values) != n:
+            # 予測値の長さが異なる場合、最初のn個を使用
+            pred_actual_values = pred_actual_values[:n] if len(pred_actual_values) > n else np.pad(
+                pred_actual_values, (0, n - len(pred_actual_values)), constant_values=np.nan)
+        if len(pred_counterfactual_values) != n:
+            pred_counterfactual_values = pred_counterfactual_values[:n] if len(pred_counterfactual_values) > n else np.pad(
+                pred_counterfactual_values, (0, n - len(pred_counterfactual_values)), constant_values=np.nan)
+
+        # 介入期間の判定（複数介入対応）
+        period_labels = []
+        for idx, time_val in enumerate(df[self.time_column]):
+            if time_val < self.intervention_points[0]:
+                period_labels.append('Pre-intervention')
+            else:
+                # どの介入期間に属するか判定
+                for i, intervention_point in enumerate(self.intervention_points):
+                    if i == len(self.intervention_points) - 1:
+                        # 最後の介入以降
+                        if time_val >= intervention_point:
+                            period_labels.append(f'Intervention_D_{i+1}')
+                            break
+                    else:
+                        # i番目の介入期間
+                        if intervention_point <= time_val < self.intervention_points[i + 1]:
+                            period_labels.append(f'Intervention_D_{i+1}')
+                            break
+
+        # 詳細DataFrameの作成
+        detail_df = pd.DataFrame({
+            'Period': period_labels,
+            self.time_column: df[self.time_column].values,
+            'Actual': df[self.target_column].values,
+            'Predicted': pred_actual_values,
+            'Counterfactual': pred_counterfactual_values,
+            'Effect': df[self.target_column].values - pred_counterfactual_values
+        })
+
+        if self.group_column is not None and self.group_column in df.columns:
+            detail_df.insert(1, self.group_column,
+                             df[self.group_column].values)
+
+        # 集計DataFrameの作成
+        group_cols = ['Period']
+        if self.group_column is not None and self.group_column in df.columns:
+            group_cols.insert(0, self.group_column)
+
+        summary_df = detail_df.groupby(group_cols).agg({
+            'Actual': 'mean',
+            'Predicted': 'mean',
+            'Counterfactual': 'mean',
+            'Effect': 'mean'
+        }).reset_index()
+
+        # カラム名をわかりやすく変更
+        summary_df.columns = group_cols + \
+            ['Actual_mean', 'Predicted_mean', 'Counterfactual_mean', 'Effect_mean']
+
+        return summary_df
+
+    def save_model(self, filepath: Optional[Union[str, Path]] = None) -> None:
+        """
+        モデルを保存
+
+        Args:
+            filepath (Optional[Union[str, Path]]): 保存先のパス
+        """
+        if self.model_results is None:
+            raise ValueError("保存するモデルが存在しません。まずfitメソッドを実行してください。")
+
+        if filepath is None:
+            filepath = Path("models") / f"its_model_{self.model_type}.pkl"
+
+        filepath = Path(filepath)
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+
+        model_data = {
+            'model_results': self.model_results,
+            'feature_columns': self.feature_columns,
+            'target_column': self.target_column,
+            'time_column': self.time_column,
+            'intervention_points': self.intervention_points,
+            'group_column': self.group_column,
+            'processed_data': self.processed_data,
+            'model_type': self.model_type,
+            'n_interventions': self.n_interventions
+        }
+
+        with open(filepath, 'wb') as f:
+            pickle.dump(model_data, f)
+
+    def load_model(self, filepath: Union[str, Path]) -> None:
+        """
+        モデルを読み込み
+
+        Args:
+            filepath (Union[str, Path]): 読み込み元のパス
+        """
+        with open(filepath, 'rb') as f:
+            model_data = pickle.load(f)
+
+        self.model_results = model_data['model_results']
+        self.feature_columns = model_data['feature_columns']
+        self.target_column = model_data['target_column']
+        self.time_column = model_data['time_column']
+        self.intervention_points = model_data['intervention_points']
+        self.group_column = model_data['group_column']
+        self.processed_data = model_data['processed_data']
+        self.model_type = model_data.get('model_type', 'base')
+        self.n_interventions = model_data.get(
+            'n_interventions', len(self.intervention_points))
+
+
+class ITSModelOLS(ITSModelBase):
+    """
+    OLSモデルを使用したITS分析クラス
+    """
+
+    def __init__(self,
+                 time_column: str,
+                 intervention_points: List[Union[int, float]],
+                 group_column: Optional[str] = None):
+        super().__init__(time_column, intervention_points, group_column)
+        self.model_type = "OLS"
 
     def fit(self,
             df: pd.DataFrame,
@@ -199,7 +445,6 @@ class ITSModel(ITSDataPreprocessor):
 
         # 共変量の追加
         if covariates is not None:
-            # 共変量の存在チェック
             missing_covariates = [
                 col for col in covariates if col not in processed_df.columns]
             if missing_covariates:
@@ -208,7 +453,6 @@ class ITSModel(ITSDataPreprocessor):
             # カテゴリカル変数をダミー変数に変換
             for covariate in covariates:
                 if processed_df[covariate].dtype == 'object' or processed_df[covariate].dtype.name == 'category':
-                    # カテゴリカル変数をダミー変数に変換（最初のカテゴリを基準として除外）
                     dummies = pd.get_dummies(
                         processed_df[covariate], prefix=covariate, drop_first=True)
                     processed_df = pd.concat([processed_df, dummies], axis=1)
@@ -224,12 +468,10 @@ class ITSModel(ITSDataPreprocessor):
         X = processed_df[feature_cols]
         y = processed_df[target_column]
 
-        # データ型を数値型に強制変換（カテゴリカル変数のダミー化後など）
         X = X.astype(float)
 
         model = sm.OLS(y, X)
 
-        # 標準誤差計算のデフォルト設定
         if cov_kwds is None:
             cov_kwds = {'maxlags': 3} if cov_type == 'HAC' else {}
 
@@ -263,19 +505,15 @@ class ITSModel(ITSDataPreprocessor):
             X = self.processed_data[self.feature_columns]
         else:
             if use_preprocessed:
-                # 既に前処理済みのデータを使用（counterfactual計算等）
                 processed_df = df
             else:
-                # 新しいデータを前処理
                 processed_df = self.fit_transform(df)
 
-            # 学習時と同じ特徴量列を作成する必要がある
             available_cols = []
             for col in self.feature_columns:
                 if col in processed_df.columns:
                     available_cols.append(col)
                 else:
-                    # ダミー変数の場合、該当する列がない場合は0で埋める
                     processed_df[col] = 0
                     available_cols.append(col)
 
@@ -288,55 +526,188 @@ class ITSModel(ITSDataPreprocessor):
         else:
             return prediction.predicted_mean
 
-    def save_model(self, filepath: Optional[Union[str, Path]] = None) -> None:
+    def summary(self) -> None:
         """
-        モデルを保存
-
-        Args:
-            filepath (Optional[Union[str, Path]]): 保存先のパス（デフォルト: models/its_model.pkl）
+        モデル結果のサマリーを表示
         """
         if self.model_results is None:
-            raise ValueError("保存するモデルが存在しません。まずfitメソッドを実行してください。")
+            raise ValueError("モデルがフィットされていません。")
 
-        # デフォルトのファイルパスを設定
-        if filepath is None:
-            filepath = Path("models") / "its_model.pkl"
+        print(self.model_results.summary())
 
-        filepath = Path(filepath)
 
-        # ディレクトリが存在しない場合は作成
-        filepath.parent.mkdir(parents=True, exist_ok=True)
+class ITSModelSARIMAX(ITSModelBase):
+    """
+    SARIMAXモデルを使用したITS分析クラス
+    """
 
-        model_data = {
-            'model_results': self.model_results,
-            'feature_columns': self.feature_columns,
-            'target_column': self.target_column,
-            'time_column': self.time_column,
-            'intervention_point': self.intervention_point,
-            'group_column': self.group_column,
-            'processed_data': self.processed_data
-        }
+    def __init__(self,
+                 time_column: str,
+                 intervention_points: List[Union[int, float]],
+                 group_column: Optional[str] = None):
+        super().__init__(time_column, intervention_points, group_column)
+        self.model_type = "SARIMAX"
+        self.best_params: Optional[Dict[str, Any]] = None
 
-        with open(filepath, 'wb') as f:
-            pickle.dump(model_data, f)
-
-    def load_model(self, filepath: Union[str, Path]) -> None:
+    def fit(self,
+            df: pd.DataFrame,
+            target_column: str,
+            order: Tuple[int, int, int] = (1, 0, 1),
+            seasonal_order: Tuple[int, int, int, int] = (0, 0, 0, 0),
+            covariates: Optional[List[str]] = None,
+            tune_with_optuna: bool = False,
+            n_trials: int = 50,
+            add_intercept: bool = False) -> Any:
         """
-        モデルを読み込み
+        SARIMAXモデルをフィッティング
 
         Args:
-            filepath (Union[str, Path]): 読み込み元のパス
-        """
-        with open(filepath, 'rb') as f:
-            model_data = pickle.load(f)
+            df (pd.DataFrame): 入力データフレーム
+            target_column (str): 目的変数のカラム名
+            order (Tuple[int, int, int]): ARIMA(p, d, q)パラメータ
+            seasonal_order (Tuple[int, int, int, int]): 季節性ARIMA(P, D, Q, s)パラメータ
+            covariates (Optional[List[str]]): 共変量のカラム名リスト
+            tune_with_optuna: Optunaでハイパーパラメータチューニングを行うか
+            n_trials: Optunaの試行回数
+            add_intercept (bool): 切片項を追加するかどうか（SARIMAXでは通常False）
 
-        self.model_results = model_data['model_results']
-        self.feature_columns = model_data['feature_columns']
-        self.target_column = model_data['target_column']
-        self.time_column = model_data['time_column']
-        self.intervention_point = model_data['intervention_point']
-        self.group_column = model_data['group_column']
-        self.processed_data = model_data['processed_data']
+        Returns:
+            SARIMAX結果オブジェクト
+        """
+        # データの妥当性チェック
+        self.validate_data(df)
+
+        # データの前処理
+        processed_df = self.fit_transform(df, add_intercept=add_intercept)
+
+        # 外生変数（ITS変数 + 共変量）の準備
+        exog_cols = []
+        for i in range(self.n_interventions):
+            exog_cols.append(f'D_{i+1}')
+            exog_cols.append(f'timedelta_{i+1}')
+
+        if covariates is not None:
+            missing_covariates = [
+                col for col in covariates if col not in processed_df.columns]
+            if missing_covariates:
+                raise ValueError(f"指定された共変量が存在しません: {missing_covariates}")
+            exog_cols.extend(covariates)
+
+        # 目的変数の存在チェック
+        if target_column not in processed_df.columns:
+            raise ValueError(f"目的変数 '{target_column}' がデータに存在しません")
+
+        y = processed_df[target_column]
+        exog = processed_df[exog_cols] if exog_cols else None
+
+        self.feature_columns = exog_cols
+        self.target_column = target_column
+
+        # Optunaでチューニング
+        if tune_with_optuna:
+            best_params = self._optuna_tune(y, exog, n_trials)
+            order = best_params['order']
+            seasonal_order = best_params['seasonal_order']
+            self.best_params = best_params
+
+        # SARIMAXモデルのフィッティング
+        model = SARIMAX(y, exog=exog, order=order,
+                        seasonal_order=seasonal_order)
+        self.model_results = model.fit(disp=False)
+
+        return self.model_results
+
+    def _optuna_tune(self, y: pd.Series, exog: Optional[pd.DataFrame], n_trials: int) -> Dict[str, Any]:
+        """
+        Optunaを使ってSARIMAXのハイパーパラメータをチューニング
+
+        Args:
+            y (pd.Series): 目的変数
+            exog (Optional[pd.DataFrame]): 外生変数
+            n_trials (int): 試行回数
+
+        Returns:
+            Dict[str, Any]: 最適パラメータ
+        """
+        def objective(trial):
+            p = trial.suggest_int('p', 0, 3)
+            d = trial.suggest_int('d', 0, 2)
+            q = trial.suggest_int('q', 0, 3)
+            P = trial.suggest_int('P', 0, 2)
+            D = trial.suggest_int('D', 0, 1)
+            Q = trial.suggest_int('Q', 0, 2)
+            s = trial.suggest_categorical('s', [0, 12])
+
+            try:
+                model = SARIMAX(y, exog=exog,
+                                order=(p, d, q),
+                                seasonal_order=(P, D, Q, s))
+                results = model.fit(disp=False)
+                return results.aic
+            except:
+                return np.inf
+
+        study = optuna.create_study(direction='minimize')
+        study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
+
+        best_params = {
+            'order': (study.best_params['p'], study.best_params['d'], study.best_params['q']),
+            'seasonal_order': (study.best_params['P'], study.best_params['D'],
+                               study.best_params['Q'], study.best_params['s'])
+        }
+
+        return best_params
+
+    def predict(self,
+                df: Optional[pd.DataFrame] = None,
+                return_ci: bool = False,
+                use_preprocessed: bool = False,
+                steps: Optional[int] = None) -> Union[pd.Series, pd.DataFrame]:
+        """
+        予測値を計算
+
+        Args:
+            df (Optional[pd.DataFrame]): 予測用データ（Noneの場合は学習データを使用）
+            return_ci (bool): 信頼区間を返すかどうか
+            use_preprocessed (bool): dfが既に前処理済みの場合True
+            steps (Optional[int]): 予測ステップ数
+
+        Returns:
+            Union[pd.Series, pd.DataFrame]: 予測結果
+        """
+        if self.model_results is None:
+            raise ValueError("モデルがフィットされていません。まずfitメソッドを実行してください。")
+
+        if df is None:
+            # In-sample予測
+            pred = self.model_results.fittedvalues
+            if return_ci:
+                # 信頼区間を含むDataFrameを返す
+                ci = self.model_results.get_forecast(
+                    steps=len(pred)).summary_frame()
+                return ci
+            else:
+                return pred
+        else:
+            if use_preprocessed:
+                processed_df = df
+            else:
+                processed_df = self.fit_transform(df)
+
+            # 外生変数の準備
+            if self.feature_columns:
+                exog = processed_df[self.feature_columns]
+            else:
+                exog = None
+
+            n_steps = len(processed_df) if steps is None else steps
+            forecast = self.model_results.get_forecast(
+                steps=n_steps, exog=exog)
+
+            if return_ci:
+                return forecast.summary_frame()
+            else:
+                return forecast.predicted_mean
 
     def summary(self) -> None:
         """
@@ -348,19 +719,238 @@ class ITSModel(ITSDataPreprocessor):
         print(self.model_results.summary())
 
 
+class ITSModelProphet(ITSModelBase):
+    """
+    Prophetモデルを使用したITS分析クラス
+    """
+
+    def __init__(self,
+                 time_column: str,
+                 intervention_points: List[Union[int, float]],
+                 group_column: Optional[str] = None):
+        super().__init__(time_column, intervention_points, group_column)
+        self.model_type = "Prophet"
+        self.best_params: Optional[Dict[str, Any]] = None
+
+    def fit(self,
+            df: pd.DataFrame,
+            target_column: str,
+            covariates: Optional[List[str]] = None,
+            changepoint_prior_scale: float = 0.05,
+            seasonality_prior_scale: float = 10.0,
+            tune_with_optuna: bool = False,
+            n_trials: int = 50,
+            add_intercept: bool = False) -> Prophet:
+        """
+        Prophetモデルをフィッティング
+
+        Args:
+            df (pd.DataFrame): 入力データフレーム
+            target_column (str): 目的変数のカラム名
+            covariates (Optional[List[str]]): 共変量のカラム名リスト
+            changepoint_prior_scale (float): トレンド変化の柔軟性
+            seasonality_prior_scale (float): 季節性の柔軟性
+            tune_with_optuna: Optunaでハイパーパラメータチューニングを行うか
+            n_trials: Optunaの試行回数
+            add_intercept (bool): 切片項を追加するかどうか（Prophetでは不要）
+
+        Returns:
+            Prophet: フィット済みProphetモデル
+        """
+        # データの妥当性チェック
+        self.validate_data(df)
+
+        # データの前処理
+        processed_df = self.fit_transform(df, add_intercept=False)
+
+        # 目的変数の存在チェック
+        if target_column not in processed_df.columns:
+            raise ValueError(f"目的変数 '{target_column}' がデータに存在しません")
+
+        self.target_column = target_column
+
+        # Prophet用のデータフレーム作成
+        # dsは日時型である必要があるため、整数の場合は日付に変換
+        ds_values = processed_df[self.time_column]
+        if not pd.api.types.is_datetime64_any_dtype(ds_values):
+            # 整数や数値の場合、基準日からの日数として変換
+            base_date = pd.Timestamp('2000-01-01')
+            ds_values = base_date + \
+                pd.to_timedelta(ds_values - ds_values.min(), unit='D')
+
+        prophet_df = pd.DataFrame({
+            'ds': ds_values,
+            'y': processed_df[target_column]
+        })
+
+        # 外生変数（レグレッサー）の追加
+        regressor_cols = []
+        for i in range(self.n_interventions):
+            prophet_df[f'D_{i+1}'] = processed_df[f'D_{i+1}']
+            prophet_df[f'timedelta_{i+1}'] = processed_df[f'timedelta_{i+1}']
+            regressor_cols.append(f'D_{i+1}')
+            regressor_cols.append(f'timedelta_{i+1}')
+
+        if covariates is not None:
+            missing_covariates = [
+                col for col in covariates if col not in processed_df.columns]
+            if missing_covariates:
+                raise ValueError(f"指定された共変量が存在しません: {missing_covariates}")
+
+            for cov in covariates:
+                prophet_df[cov] = processed_df[cov]
+                regressor_cols.append(cov)
+
+        self.feature_columns = regressor_cols
+
+        # Optunaでチューニング
+        if tune_with_optuna:
+            best_params = self._optuna_tune(
+                prophet_df, regressor_cols, n_trials)
+            changepoint_prior_scale = best_params['changepoint_prior_scale']
+            seasonality_prior_scale = best_params['seasonality_prior_scale']
+            self.best_params = best_params
+
+        # Prophetモデルの作成とフィッティング
+        model = Prophet(
+            changepoint_prior_scale=changepoint_prior_scale,
+            seasonality_prior_scale=seasonality_prior_scale
+        )
+
+        # レグレッサーの追加
+        for regressor in regressor_cols:
+            model.add_regressor(regressor)
+
+        self.model_results = model.fit(prophet_df)
+
+        return self.model_results
+
+    def _optuna_tune(self, prophet_df: pd.DataFrame, regressor_cols: List[str], n_trials: int) -> Dict[str, Any]:
+        """
+        Optunaを使ってProphetのハイパーパラメータをチューニング
+
+        Args:
+            prophet_df (pd.DataFrame): Prophet用データフレーム
+            regressor_cols (List[str]): レグレッサーのカラム名リスト
+            n_trials (int): 試行回数
+
+        Returns:
+            Dict[str, Any]: 最適パラメータ
+        """
+        def objective(trial):
+            changepoint_prior_scale = trial.suggest_float(
+                'changepoint_prior_scale', 0.001, 0.5, log=True)
+            seasonality_prior_scale = trial.suggest_float(
+                'seasonality_prior_scale', 0.01, 10, log=True)
+
+            try:
+                model = Prophet(
+                    changepoint_prior_scale=changepoint_prior_scale,
+                    seasonality_prior_scale=seasonality_prior_scale
+                )
+
+                for regressor in regressor_cols:
+                    model.add_regressor(regressor)
+
+                model.fit(prophet_df)
+
+                # クロスバリデーションの代わりにMAPEを計算
+                forecast = model.predict(prophet_df)
+                mape = np.mean(
+                    np.abs((prophet_df['y'] - forecast['yhat']) / prophet_df['y'])) * 100
+
+                return mape
+            except:
+                return np.inf
+
+        study = optuna.create_study(direction='minimize')
+        study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
+
+        return study.best_params
+
+    def predict(self,
+                df: Optional[pd.DataFrame] = None,
+                return_ci: bool = False,
+                use_preprocessed: bool = False) -> Union[pd.Series, pd.DataFrame]:
+        """
+        予測値を計算
+
+        Args:
+            df (Optional[pd.DataFrame]): 予測用データ（Noneの場合は学習データを使用）
+            return_ci (bool): 信頼区間を返すかどうか
+            use_preprocessed (bool): dfが既に前処理済みの場合True
+
+        Returns:
+            Union[pd.Series, pd.DataFrame]: 予測結果
+        """
+        if self.model_results is None:
+            raise ValueError("モデルがフィットされていません。まずfitメソッドを実行してください。")
+
+        if df is None:
+            if self.processed_data is None:
+                raise ValueError("学習データが保存されていません。")
+            processed_df = self.processed_data
+        else:
+            if use_preprocessed:
+                processed_df = df
+            else:
+                processed_df = self.fit_transform(df)
+
+        # Prophet用のデータフレーム作成
+        # dsは日時型である必要があるため、整数の場合は日付に変換
+        ds_values = processed_df[self.time_column]
+        if not pd.api.types.is_datetime64_any_dtype(ds_values):
+            # 整数や数値の場合、基準日からの日数として変換
+            base_date = pd.Timestamp('2000-01-01')
+            ds_values = base_date + \
+                pd.to_timedelta(ds_values - ds_values.min(), unit='D')
+
+        future_df = pd.DataFrame({
+            'ds': ds_values
+        })
+
+        # レグレッサーの追加
+        for regressor in self.feature_columns:
+            future_df[regressor] = processed_df[regressor]
+
+        forecast = self.model_results.predict(future_df)
+
+        if return_ci:
+            # 信頼区間を含むDataFrameを返す
+            return forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].rename(
+                columns={'yhat': 'mean', 'yhat_lower': 'mean_ci_lower',
+                         'yhat_upper': 'mean_ci_upper'}
+            )
+        else:
+            return forecast['yhat']
+
+    def summary(self) -> None:
+        """
+        モデル結果のサマリーを表示
+        """
+        if self.model_results is None:
+            raise ValueError("モデルがフィットされていません。")
+
+        print("Prophet Model Components:")
+        print(self.model_results.params)
+
+
 class ITSVisualizer:
     """
-    ITS分析結果の可視化を行うクラス
+    ITS分析結果の可視化を行うクラス（複数介入対応・新仕様対応）
 
-    グループ別の描画と画像保存機能を提供します。
+    仕様：
+    - 反実仮想予測値の95%信頼区間を薄帯で表示
+    - 実予測は介入前=緑実線、介入後=緑破線、信頼区間なし
+    - 実績値は点でプロット
     """
 
-    def __init__(self, model: ITSModel):
+    def __init__(self, model: ITSModelBase):
         """
         ITSVisualizerの初期化
 
         Args:
-            model (ITSModel): フィット済みのITSModelインスタンス
+            model (ITSModelBase): フィット済みのITSModelインスタンス
         """
         self.model = model
         if model.model_results is None:
@@ -370,29 +960,25 @@ class ITSVisualizer:
              group_column: Optional[str] = None,
              figsize: tuple = (12, 8),
              save_path: Optional[Union[str, Path]] = None,
-             show_counterfactual: bool = True,
-             show_confidence_interval: bool = True,
-             alpha: float = 0.3,
+             alpha: float = 0.2,
              point_alpha: float = 0.6,
              intervention_color: str = 'black',
              actual_color: str = 'blue',
              fit_color: str = 'green',
              counterfactual_color: str = 'red') -> plt.Figure:
         """
-        ITS分析結果をプロット
+        ITS分析結果をプロット（新仕様）
 
         Args:
             group_column (Optional[str]): グループ分けするカラム名
             figsize (tuple): 図のサイズ
             save_path (Optional[Union[str, Path]]): 保存先パス
-            show_counterfactual (bool): 反実仮想ラインを表示するか
-            show_confidence_interval (bool): 信頼区間を表示するか
-            alpha (float): 信頼区間の透明度
+            alpha (float): 反実仮想信頼区間の透明度
             point_alpha (float): データ点の透明度
             intervention_color (str): 介入ラインの色
             actual_color (str): 実測値の色
-            fit_color (str): フィットラインの色
-            counterfactual_color (str): 反実仮想ラインの色
+            fit_color (str): フィットラインの色（緑）
+            counterfactual_color (str): 反実仮想ラインの色（赤）
 
         Returns:
             plt.Figure: 作成された図オブジェクト
@@ -420,7 +1006,7 @@ class ITSVisualizer:
             fig, ax = plt.subplots(1, 1, figsize=figsize)
             axes = [ax]
         else:
-            n_cols = min(3, n_groups)  # 最大3列
+            n_cols = min(2, n_groups)
             n_rows = (n_groups + n_cols - 1) // n_cols
             fig, axes = plt.subplots(n_rows, n_cols, figsize=(
                 figsize[0]*n_cols/2, figsize[1]*n_rows/2))
@@ -444,71 +1030,87 @@ class ITSVisualizer:
                 group_data = df.copy()
                 title_suffix = ""
 
-            # 予測値の計算
-            predictions = self.model.predict(
-                group_data, return_ci=show_confidence_interval)
+            # 実予測値の計算（信頼区間なし）
+            pred_actual = self.model.predict(group_data, return_ci=False)
+            if isinstance(pred_actual, pd.DataFrame):
+                pred_actual_values = pred_actual['mean'].values
+            elif isinstance(pred_actual, pd.Series):
+                pred_actual_values = pred_actual.values
+            else:
+                pred_actual_values = pred_actual
 
-            # 反実仮想の計算（介入効果を0にセット）
-            if show_counterfactual:
-                counterfactual_data = group_data.copy()
-                # 介入がなかった場合のシナリオ：T, D, time_after すべて0に設定
-                counterfactual_data['D'] = 0           # 介入後レベル効果を0に
-                counterfactual_data['time_after'] = 0  # 介入後トレンド効果を0に
-                counterfactual_pred = self.model.predict(
-                    counterfactual_data, use_preprocessed=True)
-                # 実測値のプロット
-                group_data['pred_counterfactual'] = counterfactual_pred
+            # 反実仮想予測値の計算（信頼区間あり）
+            pred_counterfactual = self.model.predict_counterfactual(
+                group_data, return_ci=True)
+            if isinstance(pred_counterfactual, pd.DataFrame):
+                cf_mean = pred_counterfactual['mean'].values if 'mean' in pred_counterfactual.columns else pred_counterfactual['yhat'].values
+                cf_lower = pred_counterfactual.get(
+                    'mean_ci_lower', pred_counterfactual.get('obs_ci_lower', cf_mean)).values
+                cf_upper = pred_counterfactual.get(
+                    'mean_ci_upper', pred_counterfactual.get('obs_ci_upper', cf_mean)).values
+            elif isinstance(pred_counterfactual, pd.Series):
+                cf_mean = pred_counterfactual.values
+                cf_lower = cf_mean
+                cf_upper = cf_mean
+            else:
+                cf_mean = pred_counterfactual
+                cf_lower = cf_mean
+                cf_upper = cf_mean
+
+            # 実測値のプロット（点）
             ax.scatter(group_data[self.model.time_column],
                        group_data[self.model.target_column],
                        alpha=point_alpha, color=actual_color,
-                       label='Actual Values', s=30)
+                       label='Actual Values', s=30, zorder=5)
 
-            # 介入前のフィット
+            # 最初の介入点
+            first_intervention = self.model.intervention_points[0]
+
+            # 介入前の実予測（緑実線）
             pre_intervention = group_data[group_data[self.model.time_column]
-                                          <= self.model.intervention_point]
+                                          < first_intervention]
             if len(pre_intervention) > 0:
-                if show_confidence_interval and isinstance(predictions, pd.DataFrame):
-                    pred_values = predictions.loc[pre_intervention.index, 'mean']
-                else:
-                    pred_values = predictions[pre_intervention.index]
-
-                ax.plot(pre_intervention[self.model.time_column], pred_values,
+                pre_idx = group_data[self.model.time_column] < first_intervention
+                ax.plot(group_data.loc[pre_idx, self.model.time_column],
+                        pred_actual_values[pre_idx],
                         color=fit_color, linewidth=2, linestyle='-',
-                        label='Pre-intervention fit')
+                        label='Pre-intervention fit', zorder=3)
 
-            # 介入後のフィット
+            # 介入後の実予測（緑破線）
             post_intervention = group_data[group_data[self.model.time_column]
-                                           >= self.model.intervention_point]
+                                           >= first_intervention]
             if len(post_intervention) > 0:
-                if show_confidence_interval and isinstance(predictions, pd.DataFrame):
-                    pred_values = predictions.loc[post_intervention.index, 'mean']
-                    ci_lower = predictions.loc[post_intervention.index,
-                                               'mean_ci_lower']
-                    ci_upper = predictions.loc[post_intervention.index,
-                                               'mean_ci_upper']
+                post_idx = group_data[self.model.time_column] >= first_intervention
+                ax.plot(group_data.loc[post_idx, self.model.time_column],
+                        pred_actual_values[post_idx],
+                        color=fit_color, linewidth=2, linestyle='--',
+                        label='Post-intervention fit', zorder=3)
 
-                    # 信頼区間の表示
-                    ax.fill_between(post_intervention[self.model.time_column],
-                                    ci_lower, ci_upper,
-                                    alpha=alpha, color=fit_color,
-                                    label='95% Confidence Interval')
-                else:
-                    pred_values = predictions[post_intervention.index]
+            # 反実仮想のプロット（介入後のみ、信頼区間あり）
+            if len(post_intervention) > 0:
+                post_idx_arr = group_data[self.model.time_column] >= first_intervention
 
-                ax.plot(post_intervention[self.model.time_column], pred_values,
-                        color=fit_color, linewidth=2, linestyle='-',
-                        label='Post-intervention fit')
+                # 反実仮想の95%信頼区間（薄帯）
+                ax.fill_between(group_data.loc[post_idx_arr, self.model.time_column],
+                                cf_lower[post_idx_arr],
+                                cf_upper[post_idx_arr],
+                                alpha=alpha, color=counterfactual_color,
+                                label='Counterfactual 95% CI', zorder=1)
 
-                # 反実仮想のプロット
-                if show_counterfactual:
-                    ax.plot(post_intervention[self.model.time_column],
-                            post_intervention['pred_counterfactual'],
-                            color=counterfactual_color, linewidth=2,
-                            linestyle='--', label='Counterfactual')
+                # 反実仮想の平均（赤破線）
+                ax.plot(group_data.loc[post_idx_arr, self.model.time_column],
+                        cf_mean[post_idx_arr],
+                        color=counterfactual_color, linewidth=2,
+                        linestyle='--', label='Counterfactual', zorder=2)
 
-            # 介入ラインの追加
-            ax.axvline(x=self.model.intervention_point, color=intervention_color,
-                       linestyle='--', alpha=0.7, label='Intervention')
+            # 介入ラインの追加（複数介入対応）
+            for intervention_point in self.model.intervention_points:
+                ax.axvline(x=intervention_point, color=intervention_color,
+                           linestyle=':', alpha=0.7, zorder=4)
+
+            # 凡例に介入ラインを追加（1つだけ）
+            ax.axvline(x=self.model.intervention_points[0], color=intervention_color,
+                       linestyle=':', alpha=0.7, label='Intervention', zorder=4)
 
             # プロットの装飾
             ax.set_xlabel(self.model.time_column.title())
@@ -526,7 +1128,6 @@ class ITSVisualizer:
         # 保存
         if save_path is not None:
             save_path = Path(save_path)
-            # ディレクトリが存在しない場合は作成
             save_path.parent.mkdir(parents=True, exist_ok=True)
             fig.savefig(save_path, dpi=300, bbox_inches='tight')
             print(f"図を保存しました: {save_path}")
