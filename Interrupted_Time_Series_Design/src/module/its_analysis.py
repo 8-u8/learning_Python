@@ -645,9 +645,8 @@ class ITSModelSARIMAX(ITSModelBase):
                 results = model.fit(disp=False)
                 # MAPEを計算
                 fitted_values = results.fittedvalues
-                mape = np.mean(np.abs((y - fitted_values) / y)) * 100
+                mape = np.mean(np.abs((y - fitted_values) / np.abs(y))) 
                 return mape
-                return results.aic
             except:
                 return np.inf
 
@@ -812,13 +811,13 @@ class ITSModelProphet(ITSModelBase):
             best_params = self._optuna_tune(
                 prophet_df, regressor_cols, n_trials)
             changepoint_prior_scale = best_params['changepoint_prior_scale']
-            seasonality_prior_scale = best_params['seasonality_prior_scale']
+            n_changepoints = best_params['n_changepoints']
             self.best_params = best_params
 
         # Prophetモデルの作成とフィッティング
         model = Prophet(
             changepoint_prior_scale=changepoint_prior_scale,
-            seasonality_prior_scale=seasonality_prior_scale
+            n_changepoints=n_changepoints
         )
 
         # レグレッサーの追加
@@ -844,29 +843,27 @@ class ITSModelProphet(ITSModelBase):
         def objective(trial):
             changepoint_prior_scale = trial.suggest_float(
                 'changepoint_prior_scale', 0.001, 0.5, log=True)
-            seasonality_prior_scale = trial.suggest_float(
-                'seasonality_prior_scale', 0.01, 10, log=True)
+            n_changepoints = trial.suggest_int('n_changepoints', 0, 5)
 
-            try:
-                model = Prophet(
-                    changepoint_prior_scale=changepoint_prior_scale,
-                    seasonality_prior_scale=seasonality_prior_scale
-                )
+            model = Prophet(
+                changepoint_prior_scale=changepoint_prior_scale,
+                n_changepoints=n_changepoints
+            )
 
-                for regressor in regressor_cols:
-                    model.add_regressor(regressor)
+            for regressor in regressor_cols:
+                model.add_regressor(regressor)
 
-                model.fit(prophet_df)
+            model.fit(prophet_df)
 
-                # クロスバリデーションの代わりにMAPEを計算
-                forecast = model.predict(prophet_df)
-                mape = np.mean(
-                    np.abs((prophet_df['y'] - forecast['yhat']) / prophet_df['y'])) * 100
-
-                return mape
-            except:
-                return np.inf
-
+            # クロスバリデーションの代わりにMAPEを計算
+            df_eval = prophet_df.copy()
+            forecast = model.predict()
+            df_eval = df_eval.merge(forecast[['ds', 'yhat']], on='ds')
+            mape = np.mean(
+                np.abs(df_eval['y'] - df_eval['yhat']) / np.abs(df_eval['y'])
+            )
+            return mape
+            
         study = optuna.create_study(direction='minimize')
         study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
 

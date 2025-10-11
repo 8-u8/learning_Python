@@ -14,7 +14,7 @@ from .its_analysis import (
     ITSVisualizer
 )
 
-from .generate_report import generate_markdown_report
+from generate_report import generate_markdown_report
 
 __all__ = [
     'ITSDataPreprocessor',
