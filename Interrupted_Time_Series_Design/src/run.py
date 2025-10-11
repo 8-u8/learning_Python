@@ -57,7 +57,7 @@ def run_analysis():
     print("\n[1/4] データの準備中...")
     cigar = sm.datasets.get_rdataset("Cigar", "Ecdat").data
 
-    state = [3, 5]
+    state = [3]
     timestamp = [75, 80, 85]
 
     usecols = ['state', 'year', 'price', 'pop', 'sales']
