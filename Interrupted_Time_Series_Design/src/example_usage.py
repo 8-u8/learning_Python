@@ -11,6 +11,7 @@ from module.its_analysis import (
     ITSModelProphet,
     ITSVisualizer
 )
+from module import generate_markdown_report
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -128,4 +129,28 @@ plt.close()
 
 print("\n" + "=" * 80)
 print("全ての例が完了しました！")
+print("=" * 80)
+
+# Markdownレポートの生成
+print("\n4. Markdownレポートの生成")
+print("-" * 80)
+print("📝 分析結果をMarkdownレポートにまとめています...")
+
+try:
+    report_path = generate_markdown_report(
+        output_path='output/analysis_report.md')
+    print(f"✅ レポート生成完了: {report_path}")
+    print("🔍 レポートをMarkdownビューアーで確認してください！")
+    print("\nレポートには以下が含まれています:")
+    print("  - データ概要")
+    print("  - OLSモデル分析結果")
+    print("  - SARIMAXモデル分析結果")
+    print("  - Prophetモデル分析結果")
+    print("  - モデル間の比較表")
+    print("  - 可視化グラフ")
+except Exception as e:
+    print(f"❌ レポート生成中にエラーが発生しました: {e}")
+
+print("\n" + "=" * 80)
+print("🎉 すべての処理が完了しました！")
 print("=" * 80)
