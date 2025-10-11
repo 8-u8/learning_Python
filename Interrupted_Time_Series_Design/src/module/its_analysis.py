@@ -631,18 +631,22 @@ class ITSModelSARIMAX(ITSModelBase):
         """
         def objective(trial):
             p = trial.suggest_int('p', 0, 3)
-            d = trial.suggest_int('d', 0, 2)
+            d = trial.suggest_int('d', 1, 4)
             q = trial.suggest_int('q', 0, 3)
             P = trial.suggest_int('P', 0, 2)
-            D = trial.suggest_int('D', 0, 1)
+            D = trial.suggest_int('D', 0, 2)
             Q = trial.suggest_int('Q', 0, 2)
-            s = trial.suggest_categorical('s', [0, 12])
+            s = trial.suggest_categorical('s', [0, 30])
 
             try:
                 model = SARIMAX(y, exog=exog,
                                 order=(p, d, q),
                                 seasonal_order=(P, D, Q, s))
                 results = model.fit(disp=False)
+                # MAPEを計算
+                fitted_values = results.fittedvalues
+                mape = np.mean(np.abs((y - fitted_values) / y)) * 100
+                return mape
                 return results.aic
             except:
                 return np.inf

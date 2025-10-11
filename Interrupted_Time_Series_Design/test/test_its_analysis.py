@@ -2,13 +2,7 @@
 Test suite for Interrupted Time Series Analysis Package
 """
 
-from module.its_analysis import (
-    ITSDataPreprocessor,
-    ITSModelOLS,
-    ITSModelSARIMAX,
-    ITSModelProphet,
-    ITSVisualizer
-)
+
 import pytest
 import numpy as np
 import pandas as pd
@@ -18,7 +12,13 @@ import sys
 
 # Add src directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
-
+from module.its_analysis import (
+    ITSDataPreprocessor,
+    ITSModelOLS,
+    ITSModelSARIMAX,
+    ITSModelProphet,
+    ITSVisualizer
+)
 
 @pytest.fixture
 def synthetic_data_single_intervention():
