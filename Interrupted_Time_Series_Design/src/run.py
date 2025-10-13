@@ -6,6 +6,12 @@ Optunaによるハイパーパラメータチューニングを行い、
 """
 
 
+from module.its_analysis import (
+    ITSModelOLS,
+    ITSModelSARIMAX,
+    ITSModelProphet,
+    ITSVisualizer
+)
 import pandas as pd
 import statsmodels.api as sm
 import pickle
@@ -16,12 +22,7 @@ import matplotlib.pyplot as plt
 
 # モジュールのインポートパス設定
 sys.path.insert(0, str(Path(__file__).parent))
-from module.its_analysis import (
-    ITSModelOLS,
-    ITSModelSARIMAX,
-    ITSModelProphet,
-    ITSVisualizer
-)
+
 
 def save_model(model, filename):
     """
@@ -84,7 +85,8 @@ def run_analysis():
 
     # OLSモデルの可視化
     visualizer = ITSVisualizer(model_ols)
-    fig = visualizer.plot(save_path='output/report_ols_multiple_interventions.png')
+    fig = visualizer.plot(
+        save_path='output/report_ols_multiple_interventions.png')
     plt.close()
 
     # OLSモデルの保存
@@ -95,57 +97,154 @@ def run_analysis():
         print("\n[3/4] SARIMAXモデルの保存済みファイルが存在します。スキップします。")
         pass
     else:
-      print("\n[3/4] SARIMAXモデルの実行中（Optunaチューニング有効）...")
-      print("  ※ チューニングには数分かかる場合があります")
+        print("\n[3/4] SARIMAXモデルの実行中（Optunaチューニング有効）...")
+        print("  ※ チューニングには数分かかる場合があります")
 
-      model_sarimax = ITSModelSARIMAX(
-          time_column='year',
-          intervention_points=timestamp
-      )
+        model_sarimax = ITSModelSARIMAX(
+            time_column='year',
+            intervention_points=timestamp
+        )
 
-      # Optunaチューニングを有効にして実行
-      model_sarimax.fit(
-          cigar_single,
-          target_column='sales',
-          tune_with_optuna=True,  # Optunaチューニングを有効化
-          n_trials=50     # 試行回数
+        # Optunaチューニングを有効にして実行
+        model_sarimax.fit(
+            cigar_single,
+            target_column='sales',
+            tune_with_optuna=True,  # Optunaチューニングを有効化
+            n_trials=50     # 試行回数
 
-      )
-      print("  - SARIMAXモデルのフィッティング完了")
-      # SARIMAXモデルの可視化
-      visualizer = ITSVisualizer(model_sarimax)
-      fig = visualizer.plot(save_path='output/report_sarimax.png')
-      plt.close()
-      # SARIMAXモデルの保存
-      save_model(model_sarimax, 'its_model_sarimax_tuned.pkl')
+        )
+        print("  - SARIMAXモデルのフィッティング完了")
+        # SARIMAXモデルの可視化
+        visualizer = ITSVisualizer(model_sarimax)
+        fig = visualizer.plot(save_path='output/report_sarimax.png')
+        plt.close()
+        # SARIMAXモデルの保存
+        save_model(model_sarimax, 'its_model_sarimax_tuned.pkl')
 
     # Prophetモデルの実行（Optunaチューニング付き）
     if Path('models/its_model_prophet_tuned.pkl').exists():
         print("\n[4/4] Prophetモデルの保存済みファイルが存在します。スキップします。")
         pass
     else:
-      print("\n[4/4] Prophetモデルの実行中（Optunaチューニング有効）...")
-      print("  ※ チューニングには数分かかる場合があります")
+        print("\n[4/4] Prophetモデルの実行中（Optunaチューニング有効）...")
+        print("  ※ チューニングには数分かかる場合があります")
 
-      model_prophet = ITSModelProphet(
-          time_column='year',
-          intervention_points=timestamp
-      )
+        model_prophet = ITSModelProphet(
+            time_column='year',
+            intervention_points=timestamp
+        )
 
-      # Optunaチューニングを有効にして実行
-      model_prophet.fit(
-          cigar_single,
-          target_column='sales',
-          tune_with_optuna=True,  # Optunaチューニングを有効化
-          n_trials=50,      # 試行回数
-      )
-      print("  - Prophetモデルのフィッティング完了")
-      # Prophetモデルの可視化
-      visualizer = ITSVisualizer(model_prophet)
-      fig = visualizer.plot(save_path='output/report_prophet.png')
-      plt.close()
-      # Prophetモデルの保存
-      save_model(model_prophet, 'its_model_prophet_tuned.pkl')
+        # Optunaチューニングを有効にして実行
+        model_prophet.fit(
+            cigar_single,
+            target_column='sales',
+            tune_with_optuna=True,  # Optunaチューニングを有効化
+            n_trials=50,      # 試行回数
+        )
+        print("  - Prophetモデルのフィッティング完了")
+        # Prophetモデルの可視化
+        visualizer = ITSVisualizer(model_prophet)
+        fig = visualizer.plot(save_path='output/report_prophet.png')
+        plt.close()
+        # Prophetモデルの保存
+        save_model(model_prophet, 'its_model_prophet_tuned.pkl')
+
+    # プラセボクロスバリデーション
+    print("\n" + "=" * 80)
+    print("プラセボクロスバリデーション（モデル妥当性検証）")
+    print("=" * 80)
+
+    project_root = Path(__file__).parent.parent
+
+    # OLSモデルのプラセボCV
+    print("\n[プラセボCV 1/3] OLSモデル")
+    try:
+        placebo_ols = model_ols.placebo_cross_validate(
+            cigar_model,
+            target_column='sales',
+            n_placebo_points=3,
+            covariates=['price', 'pop']
+        )
+        print(f"  プラセボ効果の平均: {placebo_ols['mean_placebo_effect']:.3f}")
+        print(f"  p値: {placebo_ols['p_value']:.3f}")
+        print(f"  結果: {'✅ モデルOK' if placebo_ols['is_valid'] else '⚠️ 要確認'}")
+    except Exception as e:
+        print(f"  ❌ プラセボCV失敗: {e}")
+
+    # SARIMAXモデルのプラセボCV（モデルが存在する場合）
+    print("\n[プラセボCV 2/3] SARIMAXモデル")
+    try:
+        sarimax_model_path = project_root / 'models' / 'its_model_sarimax_tuned.pkl'
+        if sarimax_model_path.exists():
+            # 保存されたモデルを読み込む
+            with open(sarimax_model_path, 'rb') as f:
+                model_sarimax_loaded = pickle.load(f)
+
+            # モデルオブジェクトを再構築
+            model_sarimax_cv = ITSModelSARIMAX(
+                time_column='year',
+                intervention_points=timestamp
+            )
+            # 保存されたデータを復元
+            for key, value in model_sarimax_loaded.items():
+                setattr(model_sarimax_cv, key, value)
+
+            placebo_sarimax = model_sarimax_cv.placebo_cross_validate(
+                cigar_single,
+                target_column='sales',
+                n_placebo_points=2
+            )
+        else:
+            # 新しくフィットしたモデルを使用
+            placebo_sarimax = model_sarimax.placebo_cross_validate(
+                cigar_single,
+                target_column='sales',
+                n_placebo_points=2
+            )
+
+        print(f"  プラセボ効果の平均: {placebo_sarimax['mean_placebo_effect']:.3f}")
+        print(f"  p値: {placebo_sarimax['p_value']:.3f}")
+        print(
+            f"  結果: {'✅ モデルOK' if placebo_sarimax['is_valid'] else '⚠️ 要確認'}")
+    except Exception as e:
+        print(f"  ❌ プラセボCV失敗: {e}")
+
+    # ProphetモデルのプラセボCV（モデルが存在する場合）
+    print("\n[プラセボCV 3/3] Prophetモデル")
+    try:
+        prophet_model_path = project_root / 'models' / 'its_model_prophet_tuned.pkl'
+        if prophet_model_path.exists():
+            # 保存されたモデルを読み込む
+            with open(prophet_model_path, 'rb') as f:
+                model_prophet_loaded = pickle.load(f)
+
+            # モデルオブジェクトを再構築
+            model_prophet_cv = ITSModelProphet(
+                time_column='year',
+                intervention_points=timestamp
+            )
+            # 保存されたデータを復元
+            for key, value in model_prophet_loaded.items():
+                setattr(model_prophet_cv, key, value)
+
+            placebo_prophet = model_prophet_cv.placebo_cross_validate(
+                cigar_single,
+                target_column='sales',
+                n_placebo_points=2
+            )
+        else:
+            # 新しくフィットしたモデルを使用
+            placebo_prophet = model_prophet.placebo_cross_validate(
+                cigar_single,
+                target_column='sales',
+                n_placebo_points=2
+            )
+
+        print(f"  プラセボ効果の平均: {placebo_prophet['mean_placebo_effect']:.3f}")
+        print(f"  p値: {placebo_prophet['p_value']:.3f}")
+        print(f"  結果: {'✅ モデルOK' if placebo_prophet['is_valid'] else '⚠️ 要確認'}")
+    except Exception as e:
+        print(f"  ❌ プラセボCV失敗: {e}")
 
     print("\n" + "=" * 80)
     print("すべてのモデルの実行と保存が完了しました")

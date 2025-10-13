@@ -131,8 +131,68 @@ print("\n" + "=" * 80)
 print("全ての例が完了しました！")
 print("=" * 80)
 
+# プラセボCVの例
+print("\n4. プラセボクロスバリデーション（Placebo Cross-Validation）")
+print("-" * 80)
+print("📊 モデルの妥当性をプラセボCVで検証します...")
+
+# OLSモデルのプラセボCV
+print("\n4-1. OLSモデルのプラセボCV")
+try:
+    placebo_results_ols = model_ols.placebo_cross_validate(
+        cigar_model,
+        target_column='sales',
+        n_placebo_points=3,
+        covariates=['price', 'pop']
+    )
+
+    print(f"  プラセボ効果の平均: {placebo_results_ols['mean_placebo_effect']:.3f}")
+    print(f"  プラセボ効果の標準偏差: {placebo_results_ols['std_placebo_effect']:.3f}")
+    print(f"  p値: {placebo_results_ols['p_value']:.3f}")
+    print(
+        f"  モデル妥当性: {'✅ OK' if placebo_results_ols['is_valid'] else '⚠️ 要確認'}")
+except Exception as e:
+    print(f"  ❌ OLSプラセボCV失敗: {e}")
+
+# SARIMAXモデルのプラセボCV
+print("\n4-2. SARIMAXモデルのプラセボCV")
+try:
+    placebo_results_sarimax = model_sarimax.placebo_cross_validate(
+        cigar_single,
+        target_column='sales',
+        n_placebo_points=2,
+        order=(1, 0, 1)
+    )
+
+    print(f"  プラセボ効果の平均: {placebo_results_sarimax['mean_placebo_effect']:.3f}")
+    print(
+        f"  プラセボ効果の標準偏差: {placebo_results_sarimax['std_placebo_effect']:.3f}")
+    print(f"  p値: {placebo_results_sarimax['p_value']:.3f}")
+    print(
+        f"  モデル妥当性: {'✅ OK' if placebo_results_sarimax['is_valid'] else '⚠️ 要確認'}")
+except Exception as e:
+    print(f"  ❌ SARIMAXプラセボCV失敗: {e}")
+
+# ProphetモデルのプラセボCV
+print("\n4-3. ProphetモデルのプラセボCV")
+try:
+    placebo_results_prophet = model_prophet.placebo_cross_validate(
+        cigar_single,
+        target_column='sales',
+        n_placebo_points=2
+    )
+
+    print(f"  プラセボ効果の平均: {placebo_results_prophet['mean_placebo_effect']:.3f}")
+    print(
+        f"  プラセボ効果の標準偏差: {placebo_results_prophet['std_placebo_effect']:.3f}")
+    print(f"  p値: {placebo_results_prophet['p_value']:.3f}")
+    print(
+        f"  モデル妥当性: {'✅ OK' if placebo_results_prophet['is_valid'] else '⚠️ 要確認'}")
+except Exception as e:
+    print(f"  ❌ ProphetプラセボCV失敗: {e}")
+
 # Markdownレポートの生成
-print("\n4. Markdownレポートの生成")
+print("\n5. Markdownレポートの生成")
 print("-" * 80)
 print("📝 分析結果をMarkdownレポートにまとめています...")
 
