@@ -918,7 +918,7 @@ class ITSModelSARIMAX(ITSModelBase):
                                       n_trials: int) -> Dict[str, Any]:
         """
         Optunaを使ってSARIMAXのハイパーパラメータをチューニング
-        
+
         介入前データのみを使用してチューニングを行い、
         介入効果に依存しないモデル選択を実現する。
 
