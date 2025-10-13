@@ -1141,15 +1141,17 @@ class ITSModelProphet(ITSModelBase):
 
         self.feature_columns = regressor_cols
 
-        # Optunaでチューニング
+        # Optunaでチューニング（介入前データのみ）
         if tune_with_optuna:
-            best_params = self._optuna_tune(
+            best_params = self._optuna_tune_pre_intervention(
                 prophet_df, regressor_cols, n_trials)
             changepoint_prior_scale = best_params['changepoint_prior_scale']
             n_changepoints = best_params['n_changepoints']
             self.best_params = best_params
+        else:
+            n_changepoints = 25  # デフォルト値
 
-        # Prophetモデルの作成とフィッティング
+        # Prophetモデルの作成とフィッティング（全データ）
         model = Prophet(
             changepoint_prior_scale=changepoint_prior_scale,
             n_changepoints=n_changepoints
@@ -1163,9 +1165,15 @@ class ITSModelProphet(ITSModelBase):
 
         return self.model_results
 
-    def _optuna_tune(self, prophet_df: pd.DataFrame, regressor_cols: List[str], n_trials: int) -> Dict[str, Any]:
+    def _optuna_tune_pre_intervention(self,
+                                      prophet_df: pd.DataFrame,
+                                      regressor_cols: List[str],
+                                      n_trials: int) -> Dict[str, Any]:
         """
         Optunaを使ってProphetのハイパーパラメータをチューニング
+
+        介入前データのみを使用してチューニングを行い、
+        介入効果に依存しないモデル選択を実現する。
 
         Args:
             prophet_df (pd.DataFrame): Prophet用データフレーム
@@ -1175,34 +1183,81 @@ class ITSModelProphet(ITSModelBase):
         Returns:
             Dict[str, Any]: 最適パラメータ
         """
+        # 最初の介入点を取得
+        first_intervention = min(self.intervention_points)
+
+        # 介入前データのみ抽出
+        if self.processed_data is not None:
+            pre_intervention_mask = self.processed_data[self.time_column] < first_intervention
+
+            # Prophet用データフレームから介入前のみ抽出
+            prophet_df_pre = prophet_df[pre_intervention_mask].copy()
+
+            # 介入ダミーを除外した共変量のみ使用
+            non_intervention_regressors = [
+                col for col in regressor_cols
+                if not (col.startswith('D_') or col.startswith('timedelta_'))
+            ]
+        else:
+            raise ValueError("processed_dataが設定されていません")
+
+        if len(prophet_df_pre) < 10:
+            raise ValueError(
+                f"介入前データが少なすぎます（{len(prophet_df_pre)}サンプル）。最低10サンプル必要です。")
+
         def objective(trial):
             changepoint_prior_scale = trial.suggest_float(
-                'changepoint_prior_scale', 0.001, 0.5, log=True)
-            n_changepoints = trial.suggest_int('n_changepoints', 0, 5)
-
-            model = Prophet(
-                changepoint_prior_scale=changepoint_prior_scale,
-                n_changepoints=n_changepoints
+                'changepoint_prior_scale', 0.001, 0.5, log=True
             )
+            n_changepoints = trial.suggest_int('n_changepoints', 5, 25)
 
-            for regressor in regressor_cols:
-                model.add_regressor(regressor)
+            try:
+                model = Prophet(
+                    changepoint_prior_scale=changepoint_prior_scale,
+                    n_changepoints=n_changepoints
+                )
 
-            model.fit(prophet_df)
+                # 非介入共変量のみ追加
+                for regressor in non_intervention_regressors:
+                    model.add_regressor(regressor)
 
-            # クロスバリデーションの代わりにMAPEを計算
-            df_eval = prophet_df.copy()
-            forecast = model.predict()
-            df_eval = df_eval.merge(forecast[['ds', 'yhat']], on='ds')
-            mape = np.mean(
-                np.abs(df_eval['y'] - df_eval['yhat']) / np.abs(df_eval['y'])
-            )
-            return mape
+                model.fit(prophet_df_pre)
+
+                # 時系列CVで評価（Prophet標準機能）
+                from prophet.diagnostics import cross_validation, performance_metrics
+
+                # 介入前データのサイズに応じてCV設定を調整
+                data_length = len(prophet_df_pre)
+                initial_days = max(int(data_length * 0.5), 3)
+                period_days = max(int(data_length * 0.1), 1)
+                horizon_days = max(int(data_length * 0.2), 2)
+
+                df_cv = cross_validation(
+                    model,
+                    initial=f'{initial_days} days',
+                    period=f'{period_days} days',
+                    horizon=f'{horizon_days} days'
+                )
+                df_p = performance_metrics(df_cv)
+
+                # MAPEを返す
+                return df_p['mape'].mean()
+            except Exception as e:
+                # CV失敗時はinfを返す
+                return np.inf
 
         study = optuna.create_study(direction='minimize')
         study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
 
-        return study.best_params
+        best_params = study.best_params
+
+        print(f"\n✅ Prophet最適パラメータ（介入前データでチューニング）:")
+        print(
+            f"  changepoint_prior_scale: {best_params['changepoint_prior_scale']:.4f}")
+        print(f"  n_changepoints: {best_params['n_changepoints']}")
+        print(f"  MAPE: {study.best_value:.4f}")
+
+        return best_params
 
     def predict(self,
                 df: Optional[pd.DataFrame] = None,
