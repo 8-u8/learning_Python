@@ -897,23 +897,30 @@ class ITSModelSARIMAX(ITSModelBase):
         self.feature_columns = exog_cols
         self.target_column = target_column
 
-        # Optunaでチューニング
+        # Optunaでチューニング（介入前データのみ）
         if tune_with_optuna:
-            best_params = self._optuna_tune(y, exog, n_trials)
+            best_params = self._optuna_tune_pre_intervention(
+                y, exog, n_trials)
             order = best_params['order']
             seasonal_order = best_params['seasonal_order']
             self.best_params = best_params
 
-        # SARIMAXモデルのフィッティング
+        # SARIMAXモデルのフィッティング（全データ）
         model = SARIMAX(y, exog=exog, order=order,
                         seasonal_order=seasonal_order)
         self.model_results = model.fit(disp=False)
 
         return self.model_results
 
-    def _optuna_tune(self, y: pd.Series, exog: Optional[pd.DataFrame], n_trials: int) -> Dict[str, Any]:
+    def _optuna_tune_pre_intervention(self,
+                                      y: pd.Series,
+                                      exog: Optional[pd.DataFrame],
+                                      n_trials: int) -> Dict[str, Any]:
         """
         Optunaを使ってSARIMAXのハイパーパラメータをチューニング
+        
+        介入前データのみを使用してチューニングを行い、
+        介入効果に依存しないモデル選択を実現する。
 
         Args:
             y (pd.Series): 目的変数
@@ -923,24 +930,53 @@ class ITSModelSARIMAX(ITSModelBase):
         Returns:
             Dict[str, Any]: 最適パラメータ
         """
+        # 最初の介入点を取得
+        first_intervention = min(self.intervention_points)
+
+        # 介入前データのみ抽出
+        if self.processed_data is not None:
+            pre_intervention_mask = self.processed_data[self.time_column] < first_intervention
+            y_pre = y[pre_intervention_mask]
+
+            # 介入ダミーを除外した外生変数のみ使用
+            if exog is not None:
+                # 介入ダミー以外の共変量のみ抽出
+                non_intervention_cols = [
+                    col for col in exog.columns
+                    if not (col.startswith('D_') or col.startswith('timedelta_'))
+                ]
+                exog_pre = exog.loc[pre_intervention_mask,
+                                    non_intervention_cols] if non_intervention_cols else None
+            else:
+                exog_pre = None
+        else:
+            raise ValueError("processed_dataが設定されていません")
+
+        if len(y_pre) < 10:
+            raise ValueError(
+                f"介入前データが少なすぎます（{len(y_pre)}サンプル）。最低10サンプル必要です。")
+
         def objective(trial):
             p = trial.suggest_int('p', 0, 3)
-            d = trial.suggest_int('d', 1, 4)
+            d = trial.suggest_int('d', 0, 2)  # 差分次数は低めに
             q = trial.suggest_int('q', 0, 3)
             P = trial.suggest_int('P', 0, 2)
-            D = trial.suggest_int('D', 0, 2)
+            D = trial.suggest_int('D', 0, 1)
             Q = trial.suggest_int('Q', 0, 2)
-            s = trial.suggest_categorical('s', [0, 30])
+            s = trial.suggest_categorical('s', [0, 12, 30])
 
             try:
-                model = SARIMAX(y, exog=exog,
-                                order=(p, d, q),
-                                seasonal_order=(P, D, Q, s))
+                # 介入前データでのみフィット
+                model = SARIMAX(
+                    y_pre,
+                    exog=exog_pre,
+                    order=(p, d, q),
+                    seasonal_order=(P, D, Q, s)
+                )
                 results = model.fit(disp=False)
-                # MAPEを計算
-                fitted_values = results.fittedvalues
-                mape = np.mean(np.abs((y - fitted_values) / np.abs(y)))
-                return mape
+
+                # AICで評価（MAPEより頑健）
+                return results.aic
             except:
                 return np.inf
 
@@ -952,6 +988,11 @@ class ITSModelSARIMAX(ITSModelBase):
             'seasonal_order': (study.best_params['P'], study.best_params['D'],
                                study.best_params['Q'], study.best_params['s'])
         }
+
+        print(f"\n✅ SARIMAX最適パラメータ（介入前データでチューニング）:")
+        print(f"  order: {best_params['order']}")
+        print(f"  seasonal_order: {best_params['seasonal_order']}")
+        print(f"  AIC: {study.best_value:.2f}")
 
         return best_params
 
