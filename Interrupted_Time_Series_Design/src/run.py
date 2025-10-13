@@ -242,7 +242,8 @@ def run_analysis():
 
         print(f"  プラセボ効果の平均: {placebo_prophet['mean_placebo_effect']:.3f}")
         print(f"  p値: {placebo_prophet['p_value']:.3f}")
-        print(f"  結果: {'✅ モデルOK' if placebo_prophet['is_valid'] else '⚠️ 要確認'}")
+        print(
+            f"  結果: {'✅ モデルOK' if placebo_prophet['is_valid'] else '⚠️ 要確認'}")
     except Exception as e:
         print(f"  ❌ プラセボCV失敗: {e}")
 

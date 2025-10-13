@@ -3,6 +3,13 @@ Test suite for Interrupted Time Series Analysis Package
 """
 
 
+from module.its_analysis import (
+    ITSDataPreprocessor,
+    ITSModelOLS,
+    ITSModelSARIMAX,
+    ITSModelProphet,
+    ITSVisualizer
+)
 import pytest
 import numpy as np
 import pandas as pd
@@ -12,13 +19,7 @@ import sys
 
 # Add src directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
-from module.its_analysis import (
-    ITSDataPreprocessor,
-    ITSModelOLS,
-    ITSModelSARIMAX,
-    ITSModelProphet,
-    ITSVisualizer
-)
+
 
 @pytest.fixture
 def synthetic_data_single_intervention():
@@ -205,6 +206,183 @@ class TestVisualizer:
         visualizer = ITSVisualizer(model)
         fig = visualizer.plot()
         assert fig is not None
+
+
+class TestPlaceboCV:
+    """プラセボクロスバリデーションのテストクラス"""
+
+    def test_placebo_cv_ols(self, synthetic_data_single_intervention):
+        """OLSモデルのプラセボCVテスト"""
+        df, intervention_point = synthetic_data_single_intervention
+
+        model = ITSModelOLS(
+            time_column='time',
+            intervention_points=[intervention_point]
+        )
+
+        model.fit(df, target_column='value')
+
+        # プラセボCVを実行
+        placebo_results = model.placebo_cross_validate(
+            df,
+            target_column='value',
+            n_placebo_points=3
+        )
+
+        # 結果の検証
+        assert 'placebo_effects' in placebo_results
+        assert 'mean_placebo_effect' in placebo_results
+        assert 'std_placebo_effect' in placebo_results
+        assert 'p_value' in placebo_results
+        assert 'is_valid' in placebo_results
+        assert len(placebo_results['placebo_effects']) == 3
+
+    def test_placebo_cv_sarimax(self, synthetic_data_single_intervention):
+        """SARIMAXモデルのプラセボCVテスト"""
+        df, intervention_point = synthetic_data_single_intervention
+
+        model = ITSModelSARIMAX(
+            time_column='time',
+            intervention_points=[intervention_point]
+        )
+
+        model.fit(df, target_column='value', order=(1, 0, 1))
+
+        # プラセボCVを実行
+        placebo_results = model.placebo_cross_validate(
+            df,
+            target_column='value',
+            n_placebo_points=2,
+            order=(1, 0, 1)
+        )
+
+        # 結果の検証
+        assert 'placebo_effects' in placebo_results
+        assert 'p_value' in placebo_results
+        assert len(placebo_results['placebo_effects']) == 2
+
+    def test_placebo_cv_prophet(self, synthetic_data_single_intervention):
+        """ProphetモデルのプラセボCVテスト"""
+        df, intervention_point = synthetic_data_single_intervention
+
+        model = ITSModelProphet(
+            time_column='time',
+            intervention_points=[intervention_point]
+        )
+
+        model.fit(df, target_column='value')
+
+        # プラセボCVを実行
+        placebo_results = model.placebo_cross_validate(
+            df,
+            target_column='value',
+            n_placebo_points=2
+        )
+
+        # 結果の検証
+        assert 'placebo_effects' in placebo_results
+        assert 'p_value' in placebo_results
+        assert len(placebo_results['placebo_effects']) == 2
+
+    def test_placebo_cv_multiple_interventions(self, synthetic_data_multiple_interventions):
+        """複数介入のプラセボCVテスト"""
+        df, intervention_points = synthetic_data_multiple_interventions
+
+        model = ITSModelOLS(
+            time_column='time',
+            intervention_points=intervention_points
+        )
+
+        model.fit(df, target_column='value')
+
+        # 複数介入プラセボCVを実行
+        placebo_results = model.placebo_cv_multiple_interventions(
+            df,
+            target_column='value',
+            n_placebo_per_intervention=2
+        )
+
+        # 結果の検証
+        assert isinstance(placebo_results, pd.DataFrame)
+        assert 'real_intervention_index' in placebo_results.columns
+        assert 'placebo_effect' in placebo_results.columns
+        assert len(placebo_results) > 0
+
+    def test_sensitivity_analysis_cv(self, synthetic_data_single_intervention):
+        """感度分析CVのテスト"""
+        df, intervention_point = synthetic_data_single_intervention
+
+        model = ITSModelOLS(
+            time_column='time',
+            intervention_points=[intervention_point]
+        )
+
+        model.fit(df, target_column='value')
+
+        # 感度分析CVを実行
+        sensitivity_results = model.sensitivity_analysis_cv(
+            df,
+            target_column='value',
+            time_window_variations=[(10, 10), (20, 10)]
+        )
+
+        # 結果の検証
+        assert isinstance(sensitivity_results, pd.DataFrame)
+        assert 'intervention_point' in sensitivity_results.columns
+        assert 'pre_window' in sensitivity_results.columns
+        assert 'post_window' in sensitivity_results.columns
+        assert 'effect_mean' in sensitivity_results.columns
+        assert len(sensitivity_results) > 0
+
+
+class TestHyperparameterTuning:
+    """ハイパーパラメータチューニングのテストクラス"""
+
+    def test_sarimax_tuning_pre_intervention(self, synthetic_data_single_intervention):
+        """SARIMAXの介入前データチューニングテスト"""
+        df, intervention_point = synthetic_data_single_intervention
+
+        model = ITSModelSARIMAX(
+            time_column='time',
+            intervention_points=[intervention_point]
+        )
+
+        # Optunaチューニングを有効にして実行（少ない試行回数）
+        model.fit(
+            df,
+            target_column='value',
+            tune_with_optuna=True,
+            n_trials=3  # テストなので少なめ
+        )
+
+        # チューニング結果の検証
+        assert model.best_params is not None
+        assert 'order' in model.best_params
+        assert 'seasonal_order' in model.best_params
+        assert model.model_results is not None
+
+    def test_prophet_tuning_pre_intervention(self, synthetic_data_single_intervention):
+        """Prophetの介入前データチューニングテスト"""
+        df, intervention_point = synthetic_data_single_intervention
+
+        model = ITSModelProphet(
+            time_column='time',
+            intervention_points=[intervention_point]
+        )
+
+        # Optunaチューニングを有効にして実行（少ない試行回数）
+        model.fit(
+            df,
+            target_column='value',
+            tune_with_optuna=True,
+            n_trials=3  # テストなので少なめ
+        )
+
+        # チューニング結果の検証
+        assert model.best_params is not None
+        assert 'changepoint_prior_scale' in model.best_params
+        assert 'n_changepoints' in model.best_params
+        assert model.model_results is not None
 
 
 if __name__ == "__main__":
