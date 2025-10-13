@@ -167,11 +167,13 @@ class ITSDataPreprocessor:
         if self.group_column is not None and self.group_column not in df.columns:
             raise ValueError(f"グループカラム '{self.group_column}' がデータに存在しません")
 
-        # 介入点の存在チェック
+        # 介入点の範囲チェック（厳密な一致ではなく、範囲内にあるかチェック）
+        time_min = df[self.time_column].min()
+        time_max = df[self.time_column].max()
         for intervention_point in self.intervention_points:
-            if intervention_point not in df[self.time_column].values:
+            if not (time_min <= intervention_point <= time_max):
                 raise ValueError(
-                    f"介入点 '{intervention_point}' がデータの時間軸に存在しません")
+                    f"介入点 '{intervention_point}' がデータの時間軸範囲外です（範囲: {time_min} ~ {time_max}）")
 
         return True
 
@@ -399,6 +401,298 @@ class ITSModelBase(ITSDataPreprocessor, ABC):
         self.model_type = model_data.get('model_type', 'base')
         self.n_interventions = model_data.get(
             'n_interventions', len(self.intervention_points))
+
+    def _ttest_against_zero(self, effects: List[float]) -> float:
+        """
+        プラセボ効果がゼロと有意に異なるかをt検定で評価
+
+        Args:
+            effects (List[float]): プラセボ効果のリスト
+
+        Returns:
+            float: p値
+        """
+        from scipy import stats
+        if len(effects) == 0:
+            return np.nan
+        t_stat, p_value = stats.ttest_1samp(effects, 0)
+        return p_value
+
+    def placebo_cross_validate(self,
+                               df: pd.DataFrame,
+                               target_column: str,
+                               n_placebo_points: int = 3,
+                               **fit_kwargs) -> Dict[str, Any]:
+        """
+        プラセボ検定によるクロスバリデーション
+
+        介入点より前の時点を「偽の介入点」として設定し、
+        介入効果が検出されないことを確認する。
+
+        Args:
+            df (pd.DataFrame): 入力データフレーム
+            target_column (str): 目的変数のカラム名
+            n_placebo_points (int): プラセボ介入点の数
+            **fit_kwargs: fitメソッドに渡す追加パラメータ
+
+        Returns:
+            Dict[str, Any]: プラセボ効果の推定値とp値
+
+        References:
+            - Penfold & Zhang (2013). "Use of interrupted time series
+              analysis in evaluating health care quality improvements"
+        """
+        # 実介入点の最小値
+        real_intervention = min(self.intervention_points)
+
+        # 介入前データのみ抽出
+        pre_intervention_data = df[df[self.time_column]
+                                   < real_intervention].copy()
+
+        if len(pre_intervention_data) < 10:
+            raise ValueError(
+                f"介入前データが少なすぎます（{len(pre_intervention_data)}サンプル）。最低10サンプル必要です。")
+
+        # 介入前期間を等分割してプラセボ点を設定
+        time_range = pre_intervention_data[self.time_column].max() - \
+            pre_intervention_data[self.time_column].min()
+        placebo_points = [
+            pre_intervention_data[self.time_column].min() +
+            (i + 1) * time_range / (n_placebo_points + 1)
+            for i in range(n_placebo_points)
+        ]
+
+        placebo_effects = []
+
+        for placebo_point in placebo_points:
+            # プラセボモデルを作成
+            placebo_model = self.__class__(
+                time_column=self.time_column,
+                intervention_points=[placebo_point],
+                group_column=self.group_column
+            )
+
+            # フィット（チューニングなしで実行）
+            fit_kwargs_copy = fit_kwargs.copy()
+            # SARIMAXまたはProphetの場合のみtune_with_optunaを設定
+            if self.model_type in ['SARIMAX', 'Prophet']:
+                fit_kwargs_copy['tune_with_optuna'] = False
+
+            placebo_model.fit(pre_intervention_data,
+                              target_column, **fit_kwargs_copy)
+
+            # プラセボ効果を計算
+            effect_df = placebo_model.calculate_intervention_effect()
+            # 介入後の効果のみ抽出
+            intervention_effects = effect_df[effect_df['Period'].str.contains(
+                'Intervention', na=False)]
+            if len(intervention_effects) > 0:
+                placebo_effect = intervention_effects['Effect_mean'].mean()
+                placebo_effects.append(placebo_effect)
+
+        # 統計的検定
+        p_value = self._ttest_against_zero(placebo_effects)
+
+        return {
+            'placebo_effects': placebo_effects,
+            'placebo_points': placebo_points,
+            'mean_placebo_effect': np.mean(placebo_effects) if placebo_effects else np.nan,
+            'std_placebo_effect': np.std(placebo_effects) if placebo_effects else np.nan,
+            'p_value': p_value,
+            'is_valid': p_value > 0.05 if not np.isnan(p_value) else None,
+            'n_placebo_tests': len(placebo_effects)
+        }
+
+    def placebo_cv_multiple_interventions(self,
+                                          df: pd.DataFrame,
+                                          target_column: str,
+                                          n_placebo_per_intervention: int = 3,
+                                          **fit_kwargs) -> pd.DataFrame:
+        """
+        複数介入それぞれに対してプラセボCVを実行
+
+        Args:
+            df (pd.DataFrame): 入力データフレーム
+            target_column (str): 目的変数のカラム名
+            n_placebo_per_intervention (int): 各介入あたりのプラセボ点数
+            **fit_kwargs: fitメソッドに渡す追加パラメータ
+
+        Returns:
+            pd.DataFrame: 各介入のプラセボ効果の結果
+        """
+        results = []
+
+        # 各実介入に対してプラセボCVを実行
+        for i, real_intervention in enumerate(self.intervention_points):
+            # この介入より前のデータのみ抽出
+            if i == 0:
+                # 最初の介入：全データの開始から介入直前まで
+                pre_data = df[df[self.time_column] <
+                              real_intervention].copy()
+            else:
+                # 2つ目以降の介入：前の介入から現在の介入直前まで
+                prev_intervention = self.intervention_points[i-1]
+                pre_data = df[
+                    (df[self.time_column] >= prev_intervention) &
+                    (df[self.time_column] < real_intervention)
+                ].copy()
+
+            if len(pre_data) < 10:  # 最低サンプルサイズチェック
+                print(
+                    f"警告: 介入{i+1}の前のデータが少なすぎます（{len(pre_data)}サンプル）。スキップします。")
+                continue
+
+            # プラセボ点を生成
+            time_min = pre_data[self.time_column].min()
+            time_max = pre_data[self.time_column].max()
+            time_range = time_max - time_min
+
+            if time_range == 0:
+                print(f"警告: 介入{i+1}の前のデータ期間がゼロです。スキップします。")
+                continue
+
+            placebo_points = [
+                time_min + (j + 1) * time_range /
+                (n_placebo_per_intervention + 1)
+                for j in range(n_placebo_per_intervention)
+            ]
+
+            # 各プラセボ点で効果を推定
+            for placebo_point in placebo_points:
+                # プラセボモデルを作成
+                placebo_model = self.__class__(
+                    time_column=self.time_column,
+                    intervention_points=[placebo_point],
+                    group_column=self.group_column
+                )
+
+                # フィット（チューニングなし）
+                fit_kwargs_copy = fit_kwargs.copy()
+                # SARIMAXまたはProphetの場合のみtune_with_optunaを設定
+                if self.model_type in ['SARIMAX', 'Prophet']:
+                    fit_kwargs_copy['tune_with_optuna'] = False
+
+                try:
+                    placebo_model.fit(
+                        pre_data, target_column, **fit_kwargs_copy)
+                    effect_df = placebo_model.calculate_intervention_effect()
+
+                    # 介入後の効果を抽出
+                    intervention_effects = effect_df[effect_df['Period'].str.contains(
+                        'Intervention', na=False)]
+                    if len(intervention_effects) > 0:
+                        results.append({
+                            'real_intervention_index': i,
+                            'real_intervention_point': real_intervention,
+                            'placebo_point': placebo_point,
+                            'placebo_effect': intervention_effects['Effect_mean'].mean(),
+                            'placebo_effect_std': intervention_effects['Effect_mean'].std()
+                        })
+                except Exception as e:
+                    print(f"警告: プラセボ点{placebo_point}でのフィット失敗: {e}")
+                    continue
+
+        results_df = pd.DataFrame(results)
+
+        # 統計的検定を追加
+        if len(results_df) > 0:
+            print("\n【複数介入プラセボCV結果】")
+            for i in range(len(self.intervention_points)):
+                intervention_results = results_df[
+                    results_df['real_intervention_index'] == i
+                ]
+
+                if len(intervention_results) > 0:
+                    effects = intervention_results['placebo_effect'].values
+                    p_value = self._ttest_against_zero(effects)
+
+                    print(f"\n介入 {i+1}: {self.intervention_points[i]}")
+                    print(f"  プラセボ効果の平均: {np.mean(effects):.3f}")
+                    print(f"  プラセボ効果の標準偏差: {np.std(effects):.3f}")
+                    print(f"  t検定 p値: {p_value:.3f}")
+                    print(
+                        f"  → {'⚠️ モデルに問題の可能性' if p_value < 0.05 else '✅ モデルOK'}")
+
+        return results_df
+
+    def sensitivity_analysis_cv(self,
+                                df: pd.DataFrame,
+                                target_column: str,
+                                time_window_variations: Optional[List[Tuple[int, int]]] = None,
+                                **fit_kwargs) -> pd.DataFrame:
+        """
+        感度分析によるクロスバリデーション
+
+        介入点の前後で時間窓を変えて、結果の頑健性を確認する。
+
+        Args:
+            df (pd.DataFrame): 入力データフレーム
+            target_column (str): 目的変数のカラム名
+            time_window_variations (Optional[List[Tuple[int, int]]]):
+                (介入前の窓サイズ, 介入後の窓サイズ)のリスト
+            **fit_kwargs: fitメソッドに渡す追加パラメータ
+
+        Returns:
+            pd.DataFrame: 各時間窓での介入効果推定値
+
+        Example:
+            >>> variations = [(12, 12), (24, 12), (12, 24), (24, 24)]
+            >>> results = model.sensitivity_analysis_cv(df, 'sales', variations)
+        """
+        if time_window_variations is None:
+            # デフォルトで複数の窓サイズを試す
+            time_window_variations = [
+                (12, 12), (18, 12), (12, 18), (24, 12), (12, 24)
+            ]
+
+        results = []
+
+        for pre_window, post_window in time_window_variations:
+            for intervention_point in self.intervention_points:
+                # 時間窓を限定したデータを抽出
+                window_data = df[
+                    (df[self.time_column] >= intervention_point - pre_window) &
+                    (df[self.time_column] <= intervention_point + post_window)
+                ].copy()
+
+                if len(window_data) < 10:  # 最低サンプルサイズ
+                    continue
+
+                # 一時モデルを作成
+                temp_model = self.__class__(
+                    time_column=self.time_column,
+                    intervention_points=[intervention_point],
+                    group_column=self.group_column
+                )
+
+                # フィット（チューニングなし）
+                fit_kwargs_copy = fit_kwargs.copy()
+                # SARIMAXまたはProphetの場合のみtune_with_optunaを設定
+                if self.model_type in ['SARIMAX', 'Prophet']:
+                    fit_kwargs_copy['tune_with_optuna'] = False
+
+                try:
+                    temp_model.fit(window_data, target_column,
+                                   **fit_kwargs_copy)
+                    effect_df = temp_model.calculate_intervention_effect()
+
+                    # 介入後の効果を抽出
+                    intervention_effects = effect_df[effect_df['Period'].str.contains(
+                        'Intervention', na=False)]
+                    if len(intervention_effects) > 0:
+                        results.append({
+                            'intervention_point': intervention_point,
+                            'pre_window': pre_window,
+                            'post_window': post_window,
+                            'effect_mean': intervention_effects['Effect_mean'].mean(),
+                            'effect_std': intervention_effects['Effect_mean'].std()
+                        })
+                except Exception as e:
+                    print(
+                        f"警告: 窓サイズ({pre_window}, {post_window})でのフィット失敗: {e}")
+                    continue
+
+        return pd.DataFrame(results)
 
 
 class ITSModelOLS(ITSModelBase):
@@ -645,7 +939,7 @@ class ITSModelSARIMAX(ITSModelBase):
                 results = model.fit(disp=False)
                 # MAPEを計算
                 fitted_values = results.fittedvalues
-                mape = np.mean(np.abs((y - fitted_values) / np.abs(y))) 
+                mape = np.mean(np.abs((y - fitted_values) / np.abs(y)))
                 return mape
             except:
                 return np.inf
@@ -863,7 +1157,7 @@ class ITSModelProphet(ITSModelBase):
                 np.abs(df_eval['y'] - df_eval['yhat']) / np.abs(df_eval['y'])
             )
             return mape
-            
+
         study = optuna.create_study(direction='minimize')
         study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
 
