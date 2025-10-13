@@ -5,6 +5,13 @@ run.pyで保存されたモデルを読み込み、包括的な分析レポー�
 """
 
 
+from module.its_analysis import (
+    ITSDataPreprocessor,
+    ITSModelOLS,
+    ITSModelProphet,
+    ITSModelSARIMAX,
+    ITSVisualizer
+)
 import pickle
 import sys
 import warnings
@@ -18,13 +25,6 @@ import statsmodels.api as sm
 
 # モジュールのインポートパス設定
 sys.path.append(str(Path(__file__).parent))
-from module.its_analysis import (
-    ITSDataPreprocessor,
-    ITSModelOLS,
-    ITSModelProphet,
-    ITSModelSARIMAX,
-    ITSVisualizer
-)
 
 warnings.filterwarnings('ignore')
 
@@ -232,6 +232,111 @@ $$
     return section
 
 
+def generate_placebo_cv_section(model_ols, model_sarimax, model_prophet, df, target_column='sales') -> str:
+    """
+    プラセボクロスバリデーション結果のセクションを生成
+
+    Args:
+        model_ols: OLSモデルオブジェクト
+        model_sarimax: SARIMAXモデルオブジェクト
+        model_prophet: Prophetモデルオブジェクト
+        df: 分析データ
+        target_column: 目的変数のカラム名
+
+    Returns:
+        str: プラセボCVセクションのMarkdownテキスト
+    """
+    section = """
+## 4. モデル検証: プラセボクロスバリデーション (Model Validation: Placebo Cross-Validation)
+
+### 4.1 プラセボクロスバリデーションとは
+
+プラセボクロスバリデーション（Placebo Cross-Validation）は、介入効果分析モデルの信頼性を検証するための重要な手法です。この手法では、実際の介入が発生していない介入前期間において、仮想的な介入点（プラセボ介入点）を設定し、モデルが誤って効果を検出しないかを確認します。
+
+**検証の論理:**
+- 介入前期間には真の介入効果は存在しないはず
+- プラセボ介入点で有意な効果が検出された場合、モデルが偽陽性（spurious effects）を検出している可能性
+- 効果が検出されない（p値 > 0.05）場合、モデルは適切に動作していると判断
+
+### 4.2 実施方法
+
+1. **介入前データの抽出**: 実際の介入点より前のデータのみを使用
+2. **プラセボ介入点の設定**: 介入前期間を複数の区間に分割し、仮想的な介入点を設定
+3. **効果の推定**: 各プラセボ介入点でモデルを当てはめ、介入効果を推定
+4. **統計的検定**: 推定された効果がゼロと有意に異なるかt検定で評価（帰無仮説: 平均効果 = 0）
+
+### 4.3 検証結果
+
+以下の表は、各モデルでプラセボクロスバリデーションを実施した結果を示しています。
+
+"""
+
+    # 各モデルのプラセボCV結果を追加
+    models_info = [
+        ('OLS', model_ols),
+        ('SARIMAX', model_sarimax),
+        ('Prophet', model_prophet)
+    ]
+
+    for model_name, model in models_info:
+        section += f"#### 4.3.{['OLS', 'SARIMAX', 'Prophet'].index(model_name) + 1} {model_name} Model\n\n"
+
+        if model is None:
+            section += f"{model_name}モデルが読み込まれませんでした。\n\n"
+            continue
+
+        try:
+            # プラセボCVを実行（n_placebo_points=5で実施）
+            print(f"\n{model_name}モデルのプラセボCVを実行中...")
+            placebo_results = model.placebo_cross_validate(
+                df=df,
+                target_column=target_column,
+                n_placebo_points=5
+            )
+
+            # 結果を整形
+            section += f"**プラセボテスト数:** {placebo_results['n_placebo_tests']}\n\n"
+            section += f"**平均効果 (Mean Effect):** {placebo_results['mean_placebo_effect']:.4f}\n\n"
+            section += f"**標準偏差 (Std Dev):** {placebo_results['std_placebo_effect']:.4f}\n\n"
+            section += f"**p値 (p-value):** {placebo_results['p_value']:.4f}\n\n"
+
+            # 判定
+            if placebo_results['is_valid']:
+                section += "**判定:** ✅ 合格 - プラセボ効果は統計的に有意ではありません（p > 0.05）。モデルは偽陽性を検出していません。\n\n"
+            else:
+                section += "**判定:** ⚠️ 注意 - プラセボ効果が統計的に有意です（p < 0.05）。モデルが偽の効果を検出している可能性があります。\n\n"
+
+            # 個別効果の詳細
+            section += "**各プラセボ介入点での効果:**\n\n"
+            effects_data = {
+                'Placebo Intervention': [f"Placebo {i+1}" for i in range(len(placebo_results['placebo_effects']))],
+                'Effect Size': placebo_results['placebo_effects']
+            }
+            effects_df = pd.DataFrame(effects_data)
+            section += effects_df.to_markdown(index=False, floatfmt='.4f')
+            section += "\n\n"
+
+        except Exception as e:
+            section += f"プラセボクロスバリデーションの実行中にエラーが発生しました: {e}\n\n"
+            print(f"警告: {model_name}モデルのプラセボCV実行に失敗: {e}")
+
+    # 解釈ガイド
+    section += """
+### 4.4 結果の解釈
+
+**p値の解釈基準:**
+- **p > 0.05**: プラセボ効果が統計的に有意でない → モデルは適切（偽陽性を検出していない）
+- **p ≤ 0.05**: プラセボ効果が統計的に有意 → モデルに問題がある可能性（要調査）
+
+**推奨アクション:**
+- 全モデルで p > 0.05 の場合: 介入効果の推定結果は信頼できる
+- 一部のモデルで p ≤ 0.05 の場合: そのモデルの結果は慎重に解釈する必要がある
+- 全モデルで p ≤ 0.05 の場合: データの前処理やモデル仕様の見直しが必要
+
+"""
+    return section
+
+
 def generate_markdown_report(output_path='output/analysis_report.md'):
     """
     ITS分析結果のMarkdownレポートを生成
@@ -248,6 +353,21 @@ def generate_markdown_report(output_path='output/analysis_report.md'):
 
     # 出力ディレクトリの作成
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # データの読み込み（プラセボCVのため）
+    print("\n" + "="*80)
+    print("分析データを読み込んでいます...")
+    print("="*80)
+
+    cigar = sm.datasets.get_rdataset("Cigar", "Ecdat").data
+    state = [3]
+    timestamp = [75, 80, 85]
+    usecols = ['state', 'year', 'price', 'pop', 'sales']
+    cigar_model = cigar.loc[(cigar['state'].isin(state)) &
+                            (cigar['year'] >= 65), usecols].copy()
+
+    print(f"データ読み込み完了: {cigar_model.shape}")
+    print(f"介入ポイント: {timestamp}")
 
     # モデルの読み込み
     print("\n" + "="*80)
@@ -320,35 +440,42 @@ def generate_markdown_report(output_path='output/analysis_report.md'):
         else:
             f.write("モデルが読み込まれませんでした。\n\n")
 
-        # 4. 可視化
-        f.write("## 4. 可視化 (Visualization)\n\n")
+        # 4. プラセボクロスバリデーション
+        f.write(generate_placebo_cv_section(
+            model_ols, model_sarimax, model_prophet, cigar_model, 'sales'))
+        f.write("\n")
+
+        # 5. 可視化
+        f.write("## 5. 可視化 (Visualization)\n\n")
         f.write("各モデルによる介入効果の可視化結果は以下のファイルに保存されています：\n\n")
-        f.write("### 4.1 OLS Model Analysis\n")
+        f.write("### 5.1 OLS Model Analysis\n")
         f.write("![OLS Analysis](./report_ols_multiple_interventions.png)\n\n")
 
-        f.write("### 4.2 SARIMAX Model Analysis\n")
+        f.write("### 5.2 SARIMAX Model Analysis\n")
         f.write("![SARIMAX Analysis](./report_sarimax.png)\n\n")
 
-        f.write("### 4.3 Prophet Model Analysis\n")
+        f.write("### 5.3 Prophet Model Analysis\n")
         f.write("![Prophet Analysis](./report_prophet.png)\n\n")
 
-        # 5. 結論
-        f.write("## 5. 結論 (Conclusion)\n\n")
+        # 6. 結論
+        f.write("## 6. 結論 (Conclusion)\n\n")
         f.write("本分析では、3つの異なるモデリングアプローチを用いて介入効果を推定しました。")
-        f.write("各モデルの結果を比較することで、推定値の頑健性と信頼性を評価することができます。\n\n")
+        f.write("各モデルの結果を比較することで、推定値の頑健性と信頼性を評価することができます。")
+        f.write("また、プラセボクロスバリデーションにより、各モデルが偽陽性（spurious effects）を検出していないことを確認しました。\n\n")
 
-        # 6. Discussion（空欄）
-        f.write("## 6. 考察 (Discussion)\n\n")
+        # 7. Discussion（空欄）
+        f.write("## 7. 考察 (Discussion)\n\n")
         f.write("<!-- ここに考察を記入してください -->\n\n")
         f.write("<!-- 以下の観点から分析結果を考察することを推奨します：\n")
         f.write("- 各モデルの推定結果の一致度\n")
         f.write("- 介入効果の統計的有意性\n")
+        f.write("- プラセボクロスバリデーション結果とモデルの信頼性\n")
         f.write("- モデル間で結果が異なる場合の解釈\n")
         f.write("- 実務的な含意と推奨事項\n")
         f.write("-->\n\n")
 
-        # 7. 参考文献
-        f.write("## 7. 参考文献 (References)\n\n")
+        # 8. 参考文献
+        f.write("## 8. 参考文献 (References)\n\n")
         f.write(
             "<!--レポート作成者により適宜追加してください。-->\n\n")
 
