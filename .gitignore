@@ -151,4 +151,3 @@ cython_debug/
 # add: ito original ignore.
 *.txt
 *.pcap
-.github
