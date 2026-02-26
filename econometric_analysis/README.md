@@ -1,8 +1,9 @@
-# 計量経済学的線形回帰分析モジュール
+# 計量経済学の文脈で回帰分析を使うトライ
 
 ## 概要
 
-このプロジェクトは、計量経済学的アプローチに基づいた線形回帰分析を実装しています。**限界効果（Marginal Effects）** と **飽和点検出** を中心とした、経済学的解釈に重点を置いた機能を提供します。
+このプロジェクトは、計量経済学的アプローチに基づいて線形回帰分析を応用しています。  
+具体的には、回帰係数を用いた**限界効果（Marginal Effects）** と **飽和点** の検出を中心とした、経済学的解釈に重点を置いた機能を提供し、ビジネス示唆を出すための応用を整理します。
 
 ## 主要機能
 
@@ -48,7 +49,7 @@ me = calculator.marginal_effect('advertising')
 ```
 
 #### 弾力性（Elasticity）
-- **定義**: 説明変数の1%変化に対する目的変数の%変化
+- **定義**: ある説明変数が1%変化したときに、目的変数が何%変化するかを示す。
 - **計算式**: $e = \frac{dY}{dX} \times \frac{X}{Y}$
 - **経済学的解釈**: より直感的な効果の大きさを表現
 
@@ -78,7 +79,7 @@ saturation_info = calculator.detect_saturation_point('advertising', x_range)
 ```
 
 #### 応答性分析 (Responsiveness Analysis)
-- **変数の応答性**: 説明変数の百分比変化に対する目的変数の絶対的・相対的変化
+- **変数の応答性**: 説明変数の%変化に対する目的変数の絶対的・相対的変化
 
 ```python
 responsiveness = calculator.responsiveness_analysis('advertising', percentile_change=1.0)
@@ -122,7 +123,7 @@ analysis = analyzer.analyze_variable('advertising')
 $$y = \beta_0 + \beta_1 \ln(x_1) + \beta_2 \ln(x_2) + \cdots + \epsilon$$
 
 **係数の解釈**:
-- 係数 $\beta_j$ は、説明変数 $x_j$ が1%変化するときの目的変数の**絶対変化**（セミ・エラスティシティ）を表します
+- 係数 $\beta_j$ は、説明変数 $x_j$ が1%変化するときの目的変数の**絶対変化**を表します。
 - 例：$\beta_1 = 50$ なら、広告費が1%増加すると売上は50単位増加します
 
 ```python
@@ -182,6 +183,11 @@ print(f"Diminishing returns? {abs(me_at_low - me_at_high) > 0.001}")
 # 弾力性の計算（非線形モデルでも可）
 elasticity = calculator.elasticity('marketing', x_value=100, y_value=5000)
 ```
+
+
+**結果の解釈**:
+- 回帰係数は算出されないため、限界効果や弾力性、飽和点の数値計算によって、結果を理解する。
+
 
 **特別な機能**:
 - `get_partial_dependence()`: 特定の説明変数の部分依存関係をプロット用に抽出
@@ -451,28 +457,30 @@ uv run python src/advanced_examples.py
 
 ## プロジェクト構成
 
-```
-econometric_analysis/
-├── README.md                      # このファイル
-├── pyproject.toml                 # プロジェクト設定（pygam追加）
-├── main.py                        # デモンストレーション
-├── verify.py                      # 基本的な機能検証
-├── verify_extended.py             # 拡張モデルの検証
-├── src/
-│   ├── regression.py              # メインモジュール
-│   │                              #  - LinearRegressionModel
-│   │                              #  - SemiLogRegressionModel
-│   │                              #  - GAMRegressionModel
-│   │                              #  - MarginalEffectsCalculator
-│   │                              #  - RegressionAnalyzer
-│   ├── example_usage.py           # 基本的な使用例
-│   └── advanced_examples.py       # 拡張モデルの詳細な例
-└── test/
-    └── test_regression.py         # ユニットテスト
-                                   #  - 線形モデルテスト
-                                   #  - 片対数モデルテスト
-                                   #  - GAMモデルテスト
-```
+/econometric_analysis
+├── README.md
+├── STATUS.txt
+├── demo.py
+├── doc
+│   ├── COMPLETION_REPORT.md
+│   ├── IMPLEMENTATION.md
+│   └── QUICKSTART.md
+├── main.py
+├── notebook
+│   └── walkthrough.ipynb
+├── out
+├── pyproject.toml
+├── src
+│   ├── advanced_examples.py
+│   ├── example_usage.py
+│   └── regression.py
+├── test
+│   ├── test_doublog_fix.py
+│   ├── test_gam_fix.py
+│   ├── test_regression.py
+│   ├── verify.py
+│   └── verify_extended.py
+
 
 ## 計量経済学的背景
 
@@ -519,7 +527,7 @@ $$\frac{\Delta Y}{\Delta \ln(X_j)} = \beta_j$$
 
 $$Y = \beta_0 + f_1(X_1) + f_2(X_2) + \cdots + \epsilon$$
 
-ここで $f_j(\cdot)$ は平滑スプライン関数です。
+ここで $f_j(\cdot)$ は平滑化スプライン関数です。
 
 **特徴**:
 - 線形性の仮定を緩和
@@ -527,9 +535,11 @@ $$Y = \beta_0 + f_1(X_1) + f_2(X_2) + \cdots + \epsilon$$
 - 限界効果の非線形性を直接検出可能
 
 **限界効果の計算**:
+ある説明変数$X_j$の限界効果は、モデルの数値微分で推定されます。
+
 $$ME_j(X_j) = \frac{\partial f_j(X_j)}{\partial X_j}$$
 
-数値微分で推定されます。
+
 
 **計量経済学的な意義**:
 - 実務的に見られる「逓減効果」「閾値効果」などを自然に推定
@@ -542,32 +552,15 @@ $$ME_j(X_j) = \frac{\partial f_j(X_j)}{\partial X_j}$$
 
 - **線形モデル**: 飽和点は存在しません（効果は常に一定）
 - **GAMモデル**: 非線形性により飽和点が存在する可能性があります
+- **両対数モデル**: 係数が0~1の値を取るときに、飽和点を定義できる場合があります。
 
 GAMで検出された非線形性は、以下の効果を示唆します：
 - $ME_j$ が $X_j$ の値に応じて変化 → 実務的には重要な情報
 
-## 今後の拡張予定
-
-- [ ] 非線形モデル（2次項、交互作用項）への対応
-- [ ] ロジスティック回帰への対応
-- [ ] 固定効果・変量効果モデルの実装
-- [ ] 時系列分析への対応
-- [ ] 視覚化機能の充実（部分依存プロット、限界効果プロット）
-- [ ] GAMの正則化パラメータの自動チューニング
-
-## 参考文献
-
-1. Wooldridge, J. M. (2019). *Introductory Econometrics: A Modern Approach* (7th ed.). Cengage Learning.
-2. Greene, W. H. (2012). *Econometric Analysis* (7th ed.). Pearson.
-3. Cameron, A. C., & Trivedi, P. K. (2005). *Microeconometrics: Methods and Applications*. Cambridge University Press.
-4. Hastie, T., Tibshirani, R., & Friedman, J. (2009). *The Elements of Statistical Learning* (2nd ed.). Springer.
-   - 特に Chapter 9: Additive Models and Trees
-3. Cameron, A. C., & Trivedi, P. K. (2005). *Microeconometrics: Methods and Applications*. Cambridge University Press.
 
 ## ライセンス
 
 MIT License
 
 ## 作成者
-
-計量経済学分析プロジェクト
+Kien Y. Knot

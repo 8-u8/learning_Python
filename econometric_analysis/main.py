@@ -5,6 +5,7 @@ This script demonstrates the basic workflow of fitting a linear regression
 model and calculating marginal effects.
 """
 
+# %%
 import sys
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from regression import (
     MarginalEffectsCalculator,
 )
 
-
+# %%
 def main() -> None:
     """Run a simple demonstration of the regression analysis."""
     print("=" * 70)
