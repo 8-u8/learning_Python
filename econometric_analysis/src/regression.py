@@ -84,12 +84,13 @@ class LinearRegressionModel:
 
         return self
 
-    def predict(self, X: Union[pd.DataFrame, np.ndarray]) -> np.ndarray:
+    def predict(self, X: Union[pd.DataFrame, pd.Series, np.ndarray]) -> np.ndarray:
         """
         Make predictions using the fitted model.
 
         Args:
-            X (Union[pd.DataFrame, np.ndarray]): Features (n_samples, n_features).
+            X (Union[pd.DataFrame, pd.Series, np.ndarray]):
+                Features (n_samples, n_features).
 
         Returns:
             np.ndarray: Predicted values.
@@ -97,10 +98,12 @@ class LinearRegressionModel:
         if self.results_ is None:
             raise ValueError("Model must be fitted before making predictions.")
 
-        if isinstance(X, np.ndarray):
+        if isinstance(X, pd.Series):
+            X = X.to_frame()
+        elif isinstance(X, np.ndarray):
             X = pd.DataFrame(X)
 
-        X_with_const = sm.add_constant(X)
+        X_with_const = sm.add_constant(X, has_constant="add")
         return self.results_.predict(X_with_const).values
 
     def r_squared(self) -> float:
@@ -155,373 +158,6 @@ class LinearRegressionModel:
             }
         )
         return coef_df
-
-
-class MarginalEffectsCalculator:
-    """
-    Calculator for marginal effects and elasticity from fitted regression models.
-
-    This class provides methods to calculate marginal effects (partial derivatives),
-    saturation points, and elasticity measures for econometric interpretation.
-
-    Supports multiple model types:
-    - LinearRegressionModel: Linear OLS regression
-    - SemiLogRegressionModel: Semi-log regression with log-transformed features
-    - GAMRegressionModel: Generalized Additive Models with nonlinear relationships
-
-    Attributes:
-        model: Fitted regression model instance (flexible type).
-    """
-
-    def __init__(
-        self,
-        model: Union[
-            "LinearRegressionModel",
-            "SemiLogRegressionModel",
-            "DoubLogRegressionModel",
-            "GAMRegressionModel",
-        ],
-    ) -> None:
-        """
-        Initialize the marginal effects calculator.
-
-        Args:
-            model: A fitted regression model (LinearRegressionModel,
-                SemiLogRegressionModel, DoubLogRegressionModel, or GAMRegressionModel).
-
-        Raises:
-            ValueError: If model is not properly fitted.
-        """
-        # Check if model is fitted
-        if isinstance(
-            model,
-            (LinearRegressionModel, SemiLogRegressionModel, DoubLogRegressionModel),
-        ):
-            if model.results_ is None:
-                raise ValueError(
-                    "Model must be fitted before calculating marginal effects."
-                )
-        elif isinstance(model, GAMRegressionModel):
-            if model.model_ is None:
-                raise ValueError("GAM model must be fitted first.")
-        else:
-            raise ValueError(f"Unsupported model type: {type(model)}")
-
-        self.model = model
-        self._model_type = type(model).__name__
-
-    def marginal_effect(
-        self,
-        variable_name: str,
-        mean_value: Optional[float] = None,
-    ) -> float:
-        """
-        Calculate the marginal effect of a variable.
-
-        Behavior depends on model type:
-        - LinearRegressionModel: Returns constant coefficient
-        - SemiLogRegressionModel: Returns semi-elasticity (effect for 1% change)
-        - GAMRegressionModel: Returns marginal effect at specified mean_value
-
-        Args:
-            variable_name (str): Name of the variable.
-            mean_value (Optional[float]): Value at which to evaluate marginal effect
-                (required for GAM, optional for linear/semi-log).
-
-        Returns:
-            float: Marginal effect (coefficient value for linear/semi-log,
-                or numerical derivative for GAM).
-
-        Raises:
-            ValueError: If variable name not found or mean_value missing for GAM.
-        """
-        if variable_name not in self.model._feature_names:
-            raise ValueError(f"Variable '{variable_name}' not found in model features.")
-
-        if self._model_type == "DoubLogRegressionModel":
-            return self._marginal_effect_doublog(variable_name, mean_value)
-        elif self._model_type == "GAMRegressionModel":
-            return self._marginal_effect_gam(variable_name, mean_value)
-        else:
-            # LinearRegressionModel and SemiLogRegressionModel
-            idx = self.model._feature_names.index(variable_name)
-            return float(self.model.coef_[idx])
-
-    def _marginal_effect_doublog(
-        self,
-        variable_name: str,
-        mean_value: Optional[float] = None,
-    ) -> float:
-        """
-        Calculate marginal effect for double-log (power law) model.
-
-        For double-log: ln(y) = β₀ + β₁*ln(x)
-        Which is: y = a * x^β₁
-
-        Marginal effect: dy/dx = β₁ * a * x^(β₁-1) = β₁ * y / x
-
-        At mean_value x₀:
-            dy/dx = β₁ * y(x₀) / x₀
-
-        Args:
-            variable_name (str): Name of the variable.
-            mean_value (Optional[float]): Point at which to evaluate ME.
-
-        Returns:
-            float: Marginal effect at mean_value.
-        """
-        if mean_value is None:
-            mean_value = self.model.X_train_[variable_name].mean()
-
-        idx = self.model._feature_names.index(variable_name)
-        beta = self.model.coef_[idx]
-
-        # For double-log model: ln(y) = β₀ + β₁*ln(x₁) + ... + β_k*ln(x_k)
-        # Direct calculation: ME = β * y / x
-        # We need to compute y at mean_value
-
-        # y_pred = exp(β₀ + β₁*ln(mean_value) + other_terms_at_their_mean)
-        # Use the mean values of training data for other variables
-        log_prediction = self.model.intercept_
-
-        for i, fname in enumerate(self.model._feature_names):
-            if fname == variable_name:
-                x_val = mean_value
-            else:
-                x_val = self.model.X_train_[fname].mean()
-
-            log_prediction += self.model.coef_[i] * np.log(x_val)
-
-        y_pred = np.exp(log_prediction)
-
-        # ME = β * (y / x)
-        me = beta * (y_pred / mean_value)
-        return float(me)
-
-    def _marginal_effect_gam(
-        self,
-        variable_name: str,
-        mean_value: Optional[float] = None,
-    ) -> float:
-        """
-        Calculate numerical marginal effect for GAM model.
-
-        Computed as the finite difference derivative at mean_value.
-
-        Args:
-            variable_name (str): Name of the variable.
-            mean_value (Optional[float]): Point at which to evaluate derivative.
-
-        Returns:
-            float: Estimated marginal effect.
-        """
-        if mean_value is None:
-            mean_value = self.model.X_train_[variable_name].mean()
-
-        feature_idx = self.model._feature_names.index(variable_name)
-        epsilon = 1e-6
-
-        # Create data points for numerical differentiation
-        X_base = self.model.X_train_.iloc[:1].copy()
-        X_plus = X_base.copy()
-        X_minus = X_base.copy()
-
-        X_plus.iloc[0, feature_idx] = mean_value + epsilon
-        X_minus.iloc[0, feature_idx] = mean_value - epsilon
-
-        # Evaluate predictions
-        y_plus = self.model.predict(X_plus)[0]
-        y_minus = self.model.predict(X_minus)[0]
-
-        # Finite difference approximation
-        me = (y_plus - y_minus) / (2 * epsilon)
-        return float(me)
-
-    def elasticity(
-        self,
-        variable_name: str,
-        x_value: float,
-        y_value: float,
-    ) -> float:
-        """
-        Calculate the elasticity of a variable.
-
-        Elasticity = (dY/dX) * (X/Y), measuring the percentage change in Y
-        resulting from a 1% change in X.
-
-        Args:
-            variable_name (str): Name of the variable.
-            x_value (float): Value of the independent variable.
-            y_value (float): Value of the dependent variable (prediction or actual).
-
-        Returns:
-            float: Elasticity value.
-
-        Raises:
-            ValueError: If variable or y_value is invalid.
-        """
-        if y_value == 0:
-            raise ValueError("y_value cannot be zero for elasticity calculation.")
-
-        me = self.marginal_effect(variable_name)
-        return (me * x_value) / y_value
-
-    def detect_saturation_point(
-        self,
-        variable_name: str,
-        x_range: np.ndarray,
-    ) -> Dict[str, Union[float, int, str, bool]]:
-        """
-        Detect the saturation point of a variable's effect.
-
-        For linear/semi-log models: constant effect, no saturation.
-        For double-log models: detects when ME becomes negligibly small.
-        For GAM models: detects local maxima and diminishing returns.
-
-        Args:
-            variable_name (str): Name of the variable.
-            x_range (np.ndarray): Range of values to evaluate.
-
-        Returns:
-            Dict[str, Union[float, int, str, bool]]: Dictionary containing saturation analysis.
-
-        Raises:
-            ValueError: If variable name not found.
-        """
-        if variable_name not in self.model._feature_names:
-            raise ValueError(f"Variable '{variable_name}' not found in model features.")
-
-        if self._model_type == "DoubLogRegressionModel":
-            return self._detect_saturation_doublog(variable_name, x_range)
-        else:
-            # For Linear and SemiLog: constant effect
-            me = self.marginal_effect(variable_name)
-
-            return {
-                "variable": variable_name,
-                "marginal_effect": me,
-                "x_min": float(x_range.min()),
-                "x_max": float(x_range.max()),
-                "saturation_type": "linear",
-                "is_decreasing": me < 0,
-                "interpretation": (
-                    f"The model shows a constant marginal effect of {me:.4f}. "
-                    "No saturation is detected."
-                ),
-            }
-
-    def _detect_saturation_doublog(
-        self,
-        variable_name: str,
-        x_range: np.ndarray,
-    ) -> Dict[str, Union[float, int, str, bool]]:
-        """
-        Detect saturation point for double-log (power law) model.
-
-        Saturation point is defined as where ME becomes negligibly small
-        (< 1% of max ME in the range), indicating diminishing returns.
-
-        Args:
-            variable_name (str): Name of the variable.
-            x_range (np.ndarray): Range of x values to evaluate.
-
-        Returns:
-            Dict with saturation analysis.
-        """
-        idx = self.model._feature_names.index(variable_name)
-        beta = self.model.coef_[idx]
-
-        # Calculate ME at each point in x_range
-        # For double-log: ME(x) = β * y(x) / x
-        me_values = []
-        for x_val in x_range:
-            me = self._marginal_effect_doublog(variable_name, mean_value=x_val)
-            me_values.append(me)
-
-        me_values = np.array(me_values)
-
-        # Find saturation threshold (where ME < 1% of initial/max ME)
-        # For diminishing returns (β < 1), ME decreases as x increases
-        # So we look for where ME becomes negligibly small
-        
-        if len(me_values) > 0 and np.abs(me_values[0]) > 0:
-            # Use initial ME (at x_min) as reference
-            initial_me = np.abs(np.min(me_values))
-            threshold = initial_me  # 1% of initial ME
-
-            # Find first x where ME drops below threshold
-            below_threshold = np.abs(me_values) <= threshold
-
-            saturation_threshold_x = None
-            if below_threshold.any():
-                saturation_idx = np.argmax(below_threshold)
-                saturation_threshold_x = float(x_range[saturation_idx])
-        else:
-            initial_me = 0
-            threshold = 0
-            saturation_threshold_x = None
-
-        # Diminishing returns: check if β < 1 (in log-log space)
-        diminishing_returns = beta < 1 and beta > 0
-
-        return {
-            "variable": variable_name,
-            "beta_coefficient": float(beta),
-            "x_min": float(x_range.min()),
-            "x_max": float(x_range.max()),
-            "saturation_type": "power_law",
-            "diminishing_returns": diminishing_returns,
-            "saturation_threshold_x": saturation_threshold_x,
-            "initial_marginal_effect": float(initial_me),
-            "threshold_definition": "1% of initial ME",
-            "interpretation": (
-                f"Power law model with β={beta:.4f}. "
-                f"{'Diminishing returns detected (β < 1). ' if diminishing_returns else ''}"
-                f"Saturation point "
-                f"{'at x≈' + f'{saturation_threshold_x:.2f}' if saturation_threshold_x else 'not reached in range'}."
-            ),
-        }
-
-    def responsiveness_analysis(
-        self,
-        variable_name: str,
-        percentile_change: float = 1.0,
-    ) -> Dict[str, float]:
-        """
-        Analyze the responsiveness of the output to a change in input.
-
-        Args:
-            variable_name (str): Name of the variable.
-            percentile_change (float): Percentage change in the variable.
-
-        Returns:
-            Dict[str, float]: Dictionary with responsiveness metrics.
-                - 'percentage_change_x': The percentage change applied
-                - 'absolute_effect': Absolute change in Y per unit change in X
-                - 'percentage_effect': Percentage change in Y per unit change in X
-        """
-        me = self.marginal_effect(variable_name)
-
-        # Get mean value from training data
-        if self.model.X_train_ is None:
-            raise ValueError("Training data not available in model.")
-
-        x_mean = self.model.X_train_[variable_name].mean()
-        y_mean = self.model.y_train_.mean()
-
-        # Estimate impact of percentile change
-        abs_change = (percentile_change / 100) * x_mean
-        y_change = me * abs_change
-
-        return {
-            "variable": variable_name,
-            "base_x_mean": x_mean,
-            "base_y_mean": y_mean,
-            "percentage_change_x": percentile_change,
-            "absolute_x_change": abs_change,
-            "absolute_y_effect": y_change,
-            "percentage_y_effect": (y_change / y_mean) * 100,
-        }
 
 
 class RegressionAnalyzer:
@@ -661,7 +297,8 @@ class SemiLogRegressionModel:
 
         # Check for non-positive values
         if (X <= 0).any().any():
-            raise ValueError("All X values must be positive for log transformation.")
+            raise ValueError(
+                "All X values must be positive for log transformation.")
 
         # Log-transform the features
         X_logged = np.log(X)
@@ -678,12 +315,13 @@ class SemiLogRegressionModel:
 
         return self
 
-    def predict(self, X: Union[pd.DataFrame, np.ndarray]) -> np.ndarray:
+    def predict(self, X: Union[pd.DataFrame, pd.Series, np.ndarray]) -> np.ndarray:
         """
         Make predictions using the fitted semi-log model.
 
         Args:
-            X (Union[pd.DataFrame, np.ndarray]): Features (n_samples, n_features).
+            X (Union[pd.DataFrame, pd.Series, np.ndarray]):
+                Features (n_samples, n_features).
 
         Returns:
             np.ndarray: Predicted values.
@@ -691,12 +329,14 @@ class SemiLogRegressionModel:
         if self.results_ is None:
             raise ValueError("Model must be fitted before making predictions.")
 
-        if isinstance(X, np.ndarray):
+        if isinstance(X, pd.Series):
+            X = X.to_frame()
+        elif isinstance(X, np.ndarray):
             X = pd.DataFrame(X)
 
         # Log-transform features
         X_logged = np.log(X)
-        X_with_const = sm.add_constant(X_logged)
+        X_with_const = sm.add_constant(X_logged, has_constant="add")
         return self.results_.predict(X_with_const).values
 
     def r_squared(self) -> float:
@@ -825,9 +465,11 @@ class DoubLogRegressionModel:
 
         # Check for non-positive values
         if (X <= 0).any().any():
-            raise ValueError("All X values must be positive for log transformation.")
+            raise ValueError(
+                "All X values must be positive for log transformation.")
         if (y <= 0).any():
-            raise ValueError("All y values must be positive for log transformation.")
+            raise ValueError(
+                "All y values must be positive for log transformation.")
 
         # Log-transform both X and y
         X_logged = np.log1p(X)
@@ -858,24 +500,25 @@ class DoubLogRegressionModel:
         if self.results_ is None:
             raise ValueError("Model must be fitted before making predictions.")
 
-        if isinstance(X, np.ndarray):
+        if isinstance(X, pd.Series):
+            X = X.to_frame()
+        elif isinstance(X, np.ndarray):
             X = pd.DataFrame(X)
 
         # Log-transform features
         X_logged = np.log(X)
-        # Convert DataFrame to ndarray for statsmodels compatibility
-        X_logged_array = (
-            X_logged.values if isinstance(X_logged, pd.DataFrame) else X_logged
-        )
+        # Convert to ndarray for statsmodels compatibility
+        X_logged_array = np.asarray(X_logged, dtype=float)
 
         # Ensure 2D shape (single column DataFrames become 1D arrays)
         if X_logged_array.ndim == 1:
             X_logged_array = X_logged_array.reshape(-1, 1)
 
-        X_with_const = sm.add_constant(X_logged_array)
+        X_with_const = sm.add_constant(X_logged_array, has_constant="add")
 
         # Predict log(y), then exponentiate to get y
-        log_predictions = self.results_.predict(X_with_const).values
+        log_predictions = np.asarray(
+            self.results_.predict(X_with_const), dtype=float)
         return np.exp(log_predictions)
 
     def r_squared(self) -> float:
@@ -1038,7 +681,8 @@ class GAMRegressionModel:
         # Calculate R² = 1 - (SS_res / SS_tot)
         y_pred = self.predict(self.X_train_)
         ss_res = np.sum((self.y_train_.values - y_pred) ** 2)
-        ss_tot = np.sum((self.y_train_.values - self.y_train_.values.mean()) ** 2)
+        ss_tot = np.sum(
+            (self.y_train_.values - self.y_train_.values.mean()) ** 2)
 
         if ss_tot == 0:
             return 0.0
@@ -1080,5 +724,373 @@ class GAMRegressionModel:
             raise ValueError("Model must be fitted first.")
 
         return self.model_.partial_dependence(
-            feature_idx, X=self.X_train_.values, x=x_range
+            term=feature_idx, X=self.X_train_.values, width=x_range
         )
+
+
+class MarginalEffectsCalculator:
+    """
+    Calculator for marginal effects and elasticity from fitted regression models.
+
+    This class provides methods to calculate marginal effects (partial derivatives),
+    saturation points, and elasticity measures for econometric interpretation.
+
+    Supports multiple model types:
+    - LinearRegressionModel: Linear OLS regression
+    - SemiLogRegressionModel: Semi-log regression with log-transformed features
+    - GAMRegressionModel: Generalized Additive Models with nonlinear relationships
+
+    Attributes:
+        model: Fitted regression model instance (flexible type).
+    """
+
+    def __init__(
+        self,
+        model: Union[
+            "LinearRegressionModel",
+            "SemiLogRegressionModel",
+            "DoubLogRegressionModel",
+            "GAMRegressionModel",
+        ],
+    ) -> None:
+        """
+        Initialize the marginal effects calculator.
+
+        Args:
+            model: A fitted regression model (LinearRegressionModel,
+                SemiLogRegressionModel, DoubLogRegressionModel, or GAMRegressionModel).
+
+        Raises:
+            ValueError: If model is not properly fitted.
+        """
+        # Check if model is fitted
+        if isinstance(
+            model,
+            (LinearRegressionModel, SemiLogRegressionModel, DoubLogRegressionModel),
+        ):
+            if model.results_ is None:
+                raise ValueError(
+                    "Model must be fitted before calculating marginal effects."
+                )
+        elif isinstance(model, GAMRegressionModel):
+            if model.model_ is None:
+                raise ValueError("GAM model must be fitted first.")
+        else:
+            raise ValueError(f"Unsupported model type: {type(model)}")
+
+        self.model = model
+        self._model_type = type(model).__name__
+
+    def marginal_effect(
+        self,
+        variable_name: str,
+        mean_value: Optional[float] = None,
+    ) -> float:
+        """
+        Calculate the marginal effect of a variable.
+
+        Behavior depends on model type:
+        - LinearRegressionModel: Returns constant coefficient
+        - SemiLogRegressionModel: Returns semi-elasticity (effect for 1% change)
+        - GAMRegressionModel: Returns marginal effect at specified mean_value
+
+        Args:
+            variable_name (str): Name of the variable.
+            mean_value (Optional[float]): Value at which to evaluate marginal effect
+                (required for GAM, optional for linear/semi-log).
+
+        Returns:
+            float: Marginal effect (coefficient value for linear/semi-log,
+                or numerical derivative for GAM).
+
+        Raises:
+            ValueError: If variable name not found or mean_value missing for GAM.
+        """
+        if variable_name not in self.model._feature_names:
+            raise ValueError(
+                f"Variable '{variable_name}' not found in model features.")
+
+        if self._model_type == "DoubLogRegressionModel":
+            return self._marginal_effect_doublog(variable_name, mean_value)
+        elif self._model_type == "GAMRegressionModel":
+            return self._marginal_effect_gam(variable_name, mean_value)
+        else:
+            # LinearRegressionModel and SemiLogRegressionModel
+            idx = self.model._feature_names.index(variable_name)
+            return float(self.model.coef_[idx])
+
+    def _marginal_effect_doublog(
+        self,
+        variable_name: str,
+        mean_value: Optional[float] = None,
+    ) -> float:
+        """
+        Calculate marginal effect for double-log (power law) model.
+
+        For double-log: ln(y) = β₀ + β₁*ln(x)
+        Which is: y = a * x^β₁
+
+        Marginal effect: dy/dx = β₁ * a * x^(β₁-1) = β₁ * y / x
+
+        At mean_value x₀:
+            dy/dx = β₁ * y(x₀) / x₀
+
+        Args:
+            variable_name (str): Name of the variable.
+            mean_value (Optional[float]): Point at which to evaluate ME.
+
+        Returns:
+            float: Marginal effect at mean_value.
+        """
+        if mean_value is None:
+            mean_value = self.model.X_train_[variable_name].mean()
+
+        idx = self.model._feature_names.index(variable_name)
+        beta = self.model.coef_[idx]
+
+        # For double-log model: ln(y) = β₀ + β₁*ln(x₁) + ... + β_k*ln(x_k)
+        # Direct calculation: ME = β * y / x
+        # We need to compute y at mean_value
+
+        # y_pred = exp(β₀ + β₁*ln(mean_value) + other_terms_at_their_mean)
+        # Use the mean values of training data for other variables
+        log_prediction = self.model.intercept_
+
+        for i, fname in enumerate(self.model._feature_names):
+            if fname == variable_name:
+                x_val = mean_value
+            else:
+                x_val = self.model.X_train_[fname].mean()
+
+            log_prediction += self.model.coef_[i] * np.log(x_val)
+
+        y_pred = np.exp(log_prediction)
+
+        # ME = β * (y / x)
+        me = beta * (y_pred / mean_value)
+        return float(me)
+
+    def _marginal_effect_gam(
+        self,
+        variable_name: str,
+        mean_value: Optional[float] = None,
+    ) -> float:
+        """
+        Calculate numerical marginal effect for GAM model.
+
+        Computed as the finite difference derivative at mean_value.
+
+        Args:
+            variable_name (str): Name of the variable.
+            mean_value (Optional[float]): Point at which to evaluate derivative.
+
+        Returns:
+            float: Estimated marginal effect.
+        """
+        if mean_value is None:
+            mean_value = self.model.X_train_[variable_name].mean()
+
+        feature_idx = self.model._feature_names.index(variable_name)
+        epsilon = 1e-6
+
+        # Create data points for numerical differentiation
+        X_base = self.model.X_train_.iloc[:1].copy()
+        X_plus = X_base.copy()
+        X_minus = X_base.copy()
+
+        X_plus.iloc[0, feature_idx] = mean_value + epsilon
+        X_minus.iloc[0, feature_idx] = mean_value - epsilon
+
+        # Evaluate predictions
+        y_plus = self.model.predict(X_plus)[0]
+        y_minus = self.model.predict(X_minus)[0]
+
+        # Finite difference approximation
+        me = (y_plus - y_minus) / (2 * epsilon)
+        return float(me)
+
+    def elasticity(
+        self,
+        variable_name: str,
+        x_value: float,
+        y_value: float,
+    ) -> float:
+        """
+        Calculate the elasticity of a variable.
+
+        Elasticity = (dY/dX) * (X/Y), measuring the percentage change in Y
+        resulting from a 1% change in X.
+
+        Args:
+            variable_name (str): Name of the variable.
+            x_value (float): Value of the independent variable.
+            y_value (float): Value of the dependent variable (prediction or actual).
+
+        Returns:
+            float: Elasticity value.
+
+        Raises:
+            ValueError: If variable or y_value is invalid.
+        """
+        if y_value == 0:
+            raise ValueError(
+                "y_value cannot be zero for elasticity calculation.")
+
+        me = self.marginal_effect(variable_name)
+        return (me * x_value) / y_value
+
+    def detect_saturation_point(
+        self,
+        variable_name: str,
+        x_range: np.ndarray,
+    ) -> Dict[str, Union[float, int, str, bool]]:
+        """
+        Detect the saturation point of a variable's effect.
+
+        For linear/semi-log models: constant effect, no saturation.
+        For double-log models: detects when ME becomes negligibly small.
+        For GAM models: detects local maxima and diminishing returns.
+
+        Args:
+            variable_name (str): Name of the variable.
+            x_range (np.ndarray): Range of values to evaluate.
+
+        Returns:
+            Dict[str, Union[float, int, str, bool]]: Dictionary containing saturation analysis.
+
+        Raises:
+            ValueError: If variable name not found.
+        """
+        if variable_name not in self.model._feature_names:
+            raise ValueError(
+                f"Variable '{variable_name}' not found in model features.")
+
+        if self._model_type == "DoubLogRegressionModel":
+            return self._detect_saturation_doublog(variable_name, x_range)
+        else:
+            # For Linear and SemiLog: constant effect
+            me = self.marginal_effect(variable_name)
+
+            return {
+                "variable": variable_name,
+                "marginal_effect": me,
+                "x_min": float(x_range.min()),
+                "x_max": float(x_range.max()),
+                "saturation_type": "linear",
+                "is_decreasing": me < 0,
+                "interpretation": (
+                    f"The model shows a constant marginal effect of {me:.4f}. "
+                    "No saturation is detected."
+                ),
+            }
+
+    def _detect_saturation_doublog(
+        self,
+        variable_name: str,
+        x_range: np.ndarray,
+    ) -> Dict[str, Union[float, int, str, bool]]:
+        """
+        Detect saturation point for double-log (power law) model.
+
+        Saturation point is defined as where ME becomes negligibly small
+        (< 1% of max ME in the range), indicating diminishing returns.
+
+        Args:
+            variable_name (str): Name of the variable.
+            x_range (np.ndarray): Range of x values to evaluate.
+
+        Returns:
+            Dict with saturation analysis.
+        """
+        idx = self.model._feature_names.index(variable_name)
+        beta = self.model.coef_[idx]
+
+        # Calculate ME at each point in x_range
+        # For double-log: ME(x) = β * y(x) / x
+        me_values = []
+        for x_val in x_range:
+            me = self._marginal_effect_doublog(variable_name, mean_value=x_val)
+            me_values.append(me)
+
+        me_values = np.array(me_values)
+
+        # Find saturation threshold where |ME| falls below 1% of max |ME|.
+        # This makes the threshold scale to the estimated model instead of
+        # defaulting to the range endpoint.
+        abs_me_values = np.abs(me_values)
+        max_abs_me = float(abs_me_values.max()) if len(
+            abs_me_values) > 0 else 0.0
+
+        if max_abs_me > 0:
+            threshold = 0.01 * max_abs_me
+            below_threshold = abs_me_values <= threshold
+
+            saturation_threshold_x = None
+            if below_threshold.any():
+                saturation_idx = int(np.argmax(below_threshold))
+                saturation_threshold_x = float(x_range[saturation_idx])
+        else:
+            threshold = 0.0
+            saturation_threshold_x = None
+
+        # Diminishing returns: check if β < 1 (in log-log space)
+        diminishing_returns = beta < 1 and beta > 0
+
+        return {
+            "variable": variable_name,
+            "beta_coefficient": float(beta),
+            "x_min": float(x_range.min()),
+            "x_max": float(x_range.max()),
+            "saturation_type": "power_law",
+            "diminishing_returns": diminishing_returns,
+            "saturation_threshold_x": saturation_threshold_x,
+            "max_abs_marginal_effect": max_abs_me,
+            "threshold_definition": "1% of max |ME|",
+            "interpretation": (
+                f"Power law model with β={beta:.4f}. "
+                f"{'Diminishing returns detected (β < 1). ' if diminishing_returns else ''}"
+                f"Saturation point "
+                f"{'at x≈' + f'{saturation_threshold_x:.2f}' if saturation_threshold_x else 'not reached in range'}."
+            ),
+        }
+
+    def responsiveness_analysis(
+        self,
+        variable_name: str,
+        percentile_change: float = 1.0,
+    ) -> Dict[str, float]:
+        """
+        Analyze the responsiveness of the output to a change in input.
+
+        Args:
+            variable_name (str): Name of the variable.
+            percentile_change (float): Percentage change in the variable.
+
+        Returns:
+            Dict[str, float]: Dictionary with responsiveness metrics.
+                - 'percentage_change_x': The percentage change applied
+                - 'absolute_effect': Absolute change in Y per unit change in X
+                - 'percentage_effect': Percentage change in Y per unit change in X
+        """
+        me = self.marginal_effect(variable_name)
+
+        # Get mean value from training data
+        if self.model.X_train_ is None:
+            raise ValueError("Training data not available in model.")
+
+        x_mean = self.model.X_train_[variable_name].mean()
+        y_mean = self.model.y_train_.mean()
+
+        # Estimate impact of percentile change
+        abs_change = (percentile_change / 100) * x_mean
+        y_change = me * abs_change
+
+        return {
+            "variable": variable_name,
+            "base_x_mean": x_mean,
+            "base_y_mean": y_mean,
+            "percentage_change_x": percentile_change,
+            "absolute_x_change": abs_change,
+            "absolute_y_effect": y_change,
+            "percentage_y_effect": (y_change / y_mean) * 100,
+        }

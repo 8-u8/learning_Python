@@ -1,3 +1,10 @@
+from src.regression import (
+    DoubLogRegressionModel,
+    GAMRegressionModel,
+    LinearRegressionModel,
+    MarginalEffectsCalculator,
+    SemiLogRegressionModel,
+)
 import sys
 from pathlib import Path
 
@@ -7,14 +14,6 @@ import pytest
 
 # Add src directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
-from src.regression import (
-    DoubLogRegressionModel,
-    GAMRegressionModel,
-    LinearRegressionModel,
-    MarginalEffectsCalculator,
-    SemiLogRegressionModel,
-)
 
 
 class TestLinearRegressionModel:
@@ -68,6 +67,22 @@ class TestLinearRegressionModel:
         predictions = model.predict(simple_data[["x1", "x2"]])
         assert len(predictions) == len(simple_data)
         assert predictions.dtype == np.float64
+
+    def test_model_predict_single_row(self, simple_data):
+        """Test model prediction with a single-row DataFrame input."""
+        model = LinearRegressionModel()
+        model.fit(simple_data[["x1", "x2"]], simple_data["y"])
+
+        one_row = pd.DataFrame(
+            {
+                "x1": [simple_data["x1"].mean()],
+                "x2": [simple_data["x2"].mean()],
+            }
+        )
+        prediction = model.predict(one_row)
+
+        assert prediction.shape == (1,)
+        assert prediction.dtype == np.float64
 
     def test_model_r_squared(self, simple_data):
         """Test R-squared calculation."""
@@ -368,6 +383,17 @@ class TestDoubLogRegressionModel:
         assert len(predictions) == len(power_law_data)
         assert predictions.dtype == np.float64
 
+    def test_doublog_predict_with_series_input(self, power_law_data):
+        """Test double-log model prediction with pandas Series input."""
+        model = DoubLogRegressionModel()
+        model.fit(power_law_data[["x"]], power_law_data["y"])
+
+        x_series = power_law_data["x"]
+        predictions = model.predict(x_series)
+
+        assert len(predictions) == len(power_law_data)
+        assert predictions.dtype == np.float64
+
     def test_doublog_r_squared(self, power_law_data):
         """Test double-log model R-squared."""
         model = DoubLogRegressionModel()
@@ -383,7 +409,8 @@ class TestDoubLogRegressionModel:
 
         calculator = MarginalEffectsCalculator(model)
 
-        x_range = np.linspace(power_law_data["x"].min(), power_law_data["x"].max(), 50)
+        x_range = np.linspace(
+            power_law_data["x"].min(), power_law_data["x"].max(), 50)
         saturation_info = calculator.detect_saturation_point("x", x_range)
 
         assert saturation_info is not None
