@@ -9,6 +9,11 @@ We provide functions for estimate coefficients, calculate marginal effects of es
 
 Also, we provide simulation functions for finding threshold of covariates like marginal utility, ROAS, etc.
 
+- Using several regression models
+  - General Linear Model
+  - Generalized Linear Model(GLM)
+  - Generalized Additive Model(GAM)
+    - this model allows to estimate functional relationships between the response variable and the predictors.
 - Estimate coefficients using several methods
   - Ordinary Least Squares (OLS)
   - Weighted Least Squares (WLS)
