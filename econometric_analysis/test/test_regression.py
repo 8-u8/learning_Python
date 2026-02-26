@@ -4,12 +4,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
-from scipy import stats
 
 # Add src directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from regression import (
+from src.regression import (
+    DoubLogRegressionModel,
     GAMRegressionModel,
     LinearRegressionModel,
     MarginalEffectsCalculator,
@@ -328,6 +328,67 @@ class TestGAMRegressionModel:
 
         elasticity = calculator.elasticity("x1", x1_val, y_val)
         assert isinstance(elasticity, (int, float, np.number))
+
+
+class TestDoubLogRegressionModel:
+    """Test double-log regression model (power law)."""
+
+    @pytest.fixture
+    def power_law_data(self):
+        """Generate data with power law relationship."""
+        np.random.seed(42)
+        n = 150
+
+        # Power law relationship: y = a * x^β
+        x = np.linspace(1, 100, n)
+        y = 100 * (x**0.7) + np.random.normal(0, 50, n)
+
+        df = pd.DataFrame({"y": y, "x": x})
+        return df
+
+    def test_doublog_initialization(self):
+        """Test double-log model initialization."""
+        model = DoubLogRegressionModel()
+        assert model is not None
+
+    def test_doublog_fit(self, power_law_data):
+        """Test double-log model fitting."""
+        model = DoubLogRegressionModel()
+        model.fit(power_law_data[["x"]], power_law_data["y"])
+
+        assert model.results_ is not None
+        assert len(model.coef_) == 1
+
+    def test_doublog_predict(self, power_law_data):
+        """Test double-log model prediction."""
+        model = DoubLogRegressionModel()
+        model.fit(power_law_data[["x"]], power_law_data["y"])
+
+        predictions = model.predict(power_law_data[["x"]])
+        assert len(predictions) == len(power_law_data)
+        assert predictions.dtype == np.float64
+
+    def test_doublog_r_squared(self, power_law_data):
+        """Test double-log model R-squared."""
+        model = DoubLogRegressionModel()
+        model.fit(power_law_data[["x"]], power_law_data["y"])
+
+        r_squared = model.r_squared()
+        assert 0 <= r_squared <= 1
+
+    def test_doublog_saturation_point(self, power_law_data):
+        """Test saturation point detection for double-log model."""
+        model = DoubLogRegressionModel()
+        model.fit(power_law_data[["x"]], power_law_data["y"])
+
+        calculator = MarginalEffectsCalculator(model)
+
+        x_range = np.linspace(power_law_data["x"].min(), power_law_data["x"].max(), 50)
+        saturation_info = calculator.detect_saturation_point("x", x_range)
+
+        assert saturation_info is not None
+        assert "saturation_threshold_x" in saturation_info
+        assert "diminishing_returns" in saturation_info
 
 
 if __name__ == "__main__":

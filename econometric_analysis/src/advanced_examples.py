@@ -18,10 +18,11 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent))
 
 from regression import (
-    LinearRegressionModel,
-    SemiLogRegressionModel,
+    DoubLogRegressionModel,
     GAMRegressionModel,
+    LinearRegressionModel,
     MarginalEffectsCalculator,
+    SemiLogRegressionModel,
 )
 
 
@@ -272,13 +273,111 @@ def example_3_model_comparison() -> None:
     print(f"Semi-Log Model R²:   {semilog_model.r_squared():.6f}")
     print(f"GAM Model R²:        {gam_model.r_squared():.6f}")
     print(f"\n→ Semi-Log model fits best (matches the true log relationship)")
+
+
+def example_4_doublog_saturation() -> None:
+    """
+    Example 4: Double-log model (power law) with saturation point detection.
+
+    This example demonstrates how double-log regression captures
+    diminishing returns effects and where saturation occurs.
+
+    Model: ln(y) = β₀ + β₁*ln(x)
+    Expands to: y = a * x^β₁
+
+    When 0 < β₁ < 1, diminishing returns are observed.
+    The saturation point is where marginal effect becomes negligibly small.
+    """
+    print("\n\n" + "=" * 80)
+    print("Example 4: Double-Log Model - Diminishing Returns & Saturation")
+    print("=" * 80)
+
+    # Generate power law data
+    np.random.seed(789)
+    n = 200
+
+    # Marketing budget (feature)
+    marketing = np.linspace(10, 1000, n)
+
+    # Revenue (target) - power law relationship: y = 50000 * x^0.65
+    revenue = 50000 * (marketing**0.65) + np.random.normal(0, 50000, n)
+
+    df = pd.DataFrame(
+        {
+            "Revenue": revenue,
+            "Marketing": marketing,
+        }
     )
+
+    print("\nDataset Summary:")
+    print(df.describe())
+
+    # Fit double-log model
+    model = DoubLogRegressionModel()
+    model.fit(df[["Marketing"]], df["Revenue"])
+
+    print("\nDouble-Log Model Results:")
+    print(model.summary())
+
+    # Analyze marginal effects and saturation
+    calculator = MarginalEffectsCalculator(model)
+
+    print("\n" + "-" * 80)
+    print("Marginal Effects Analysis:")
+    print("-" * 80)
+
+    # Marginal effects at different marketing levels
+    marketing_levels = [50, 200, 500, 1000]
+    print("\nMarginal Effect at Different Marketing Spend Levels:")
+    print("(Shows diminishing returns as marketing increases)")
+
+    for m_level in marketing_levels:
+        me = calculator.marginal_effect("Marketing", mean_value=m_level)
+        print(f"  Marketing=${m_level:4d}: ME=${me:10,.2f} per dollar")
+
+    # Saturation point detection
+    print("\n" + "-" * 80)
+    print("Saturation Point Detection:")
+    print("-" * 80)
+
+    x_range = np.linspace(df["Marketing"].min(), df["Marketing"].max(), 100)
+    saturation_info = calculator.detect_saturation_point("Marketing", x_range)
+
+    print(f"\nBeta Coefficient (elasticity): {saturation_info['beta_coefficient']:.4f}")
+    print(f"Diminishing Returns: {saturation_info['diminishing_returns']}")
+
+    if saturation_info["saturation_threshold_x"] is not None:
+        print(f"Saturation Point: ${saturation_info['saturation_threshold_x']:,.2f}")
+    else:
+        print(f"Saturation Point: Not reached in range")
+
+    print(f"\nInterpretation:")
+    print(f"  {saturation_info['interpretation']}")
+
+    # Responsiveness analysis
+    print("\n" + "-" * 80)
+    print("Business Impact Analysis:")
+    print("-" * 80)
+
+    responsiveness = calculator.responsiveness_analysis(
+        "Marketing", percentile_change=5.0
+    )
+
+    print(f"\n5% Increase in Marketing Spend:")
+    print(f"  Base Marketing: ${responsiveness['base_x_mean']:,.2f}")
+    print(f"  Absolute Change: ${responsiveness['absolute_x_change']:,.2f}")
+    print(f"  Revenue Impact: ${responsiveness['absolute_y_effect']:,.2f}")
+    print(f"  Revenue % Change: {responsiveness['percentage_y_effect']:.4f}%")
+
+    # R-squared
+    print(f"\nR²: {model.r_squared():.6f}")
 
 
 if __name__ == "__main__":
     example_1_semilog_regression()
     example_2_gam_nonlinear()
     example_3_model_comparison()
+    example_4_doublog_saturation()
 
     print("\n\n" + "=" * 80)
     print("All examples completed successfully!")

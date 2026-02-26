@@ -49,8 +49,8 @@ class LinearRegressionModel:
 
     def fit(
         self,
-        X: Union[pd.DataFrame, np.ndarray],
-        y: Union[pd.Series, np.ndarray],
+        X: pd.DataFrame,
+        y: pd.Series,
     ) -> "LinearRegressionModel":
         """
         Fit the linear regression model using OLS.
@@ -176,7 +176,10 @@ class MarginalEffectsCalculator:
     def __init__(
         self,
         model: Union[
-            "LinearRegressionModel", "SemiLogRegressionModel", "GAMRegressionModel"
+            "LinearRegressionModel",
+            "SemiLogRegressionModel",
+            "DoubLogRegressionModel",
+            "GAMRegressionModel",
         ],
     ) -> None:
         """
@@ -184,13 +187,16 @@ class MarginalEffectsCalculator:
 
         Args:
             model: A fitted regression model (LinearRegressionModel,
-                SemiLogRegressionModel, or GAMRegressionModel).
+                SemiLogRegressionModel, DoubLogRegressionModel, or GAMRegressionModel).
 
         Raises:
             ValueError: If model is not properly fitted.
         """
         # Check if model is fitted
-        if isinstance(model, (LinearRegressionModel, SemiLogRegressionModel)):
+        if isinstance(
+            model,
+            (LinearRegressionModel, SemiLogRegressionModel, DoubLogRegressionModel),
+        ):
             if model.results_ is None:
                 raise ValueError(
                     "Model must be fitted before calculating marginal effects."
@@ -232,12 +238,65 @@ class MarginalEffectsCalculator:
         if variable_name not in self.model._feature_names:
             raise ValueError(f"Variable '{variable_name}' not found in model features.")
 
-        if self._model_type == "GAMRegressionModel":
+        if self._model_type == "DoubLogRegressionModel":
+            return self._marginal_effect_doublog(variable_name, mean_value)
+        elif self._model_type == "GAMRegressionModel":
             return self._marginal_effect_gam(variable_name, mean_value)
         else:
             # LinearRegressionModel and SemiLogRegressionModel
             idx = self.model._feature_names.index(variable_name)
             return float(self.model.coef_[idx])
+
+    def _marginal_effect_doublog(
+        self,
+        variable_name: str,
+        mean_value: Optional[float] = None,
+    ) -> float:
+        """
+        Calculate marginal effect for double-log (power law) model.
+
+        For double-log: ln(y) = β₀ + β₁*ln(x)
+        Which is: y = a * x^β₁
+
+        Marginal effect: dy/dx = β₁ * a * x^(β₁-1) = β₁ * y / x
+
+        At mean_value x₀:
+            dy/dx = β₁ * y(x₀) / x₀
+
+        Args:
+            variable_name (str): Name of the variable.
+            mean_value (Optional[float]): Point at which to evaluate ME.
+
+        Returns:
+            float: Marginal effect at mean_value.
+        """
+        if mean_value is None:
+            mean_value = self.model.X_train_[variable_name].mean()
+
+        idx = self.model._feature_names.index(variable_name)
+        beta = self.model.coef_[idx]
+
+        # For double-log model: ln(y) = β₀ + β₁*ln(x₁) + ... + β_k*ln(x_k)
+        # Direct calculation: ME = β * y / x
+        # We need to compute y at mean_value
+
+        # y_pred = exp(β₀ + β₁*ln(mean_value) + other_terms_at_their_mean)
+        # Use the mean values of training data for other variables
+        log_prediction = self.model.intercept_
+
+        for i, fname in enumerate(self.model._feature_names):
+            if fname == variable_name:
+                x_val = mean_value
+            else:
+                x_val = self.model.X_train_[fname].mean()
+
+            log_prediction += self.model.coef_[i] * np.log(x_val)
+
+        y_pred = np.exp(log_prediction)
+
+        # ME = β * (y / x)
+        me = beta * (y_pred / mean_value)
+        return float(me)
 
     def _marginal_effect_gam(
         self,
@@ -311,24 +370,20 @@ class MarginalEffectsCalculator:
         self,
         variable_name: str,
         x_range: np.ndarray,
-    ) -> Dict[str, Union[float, int]]:
+    ) -> Dict[str, Union[float, int, str, bool]]:
         """
         Detect the saturation point of a variable's effect.
 
-        For linear models, there is no saturation point (effect is constant).
-        This method provides information about the range and pattern of effects.
+        For linear/semi-log models: constant effect, no saturation.
+        For double-log models: detects when ME becomes negligibly small.
+        For GAM models: detects local maxima and diminishing returns.
 
         Args:
             variable_name (str): Name of the variable.
             x_range (np.ndarray): Range of values to evaluate.
 
         Returns:
-            Dict[str, Union[float, int]]: Dictionary containing saturation analysis.
-                - 'marginal_effect': The constant marginal effect
-                - 'x_min': Minimum x value analyzed
-                - 'x_max': Maximum x value analyzed
-                - 'saturation_type': 'linear' (no saturation)
-                - 'interpretation': String explanation
+            Dict[str, Union[float, int, str, bool]]: Dictionary containing saturation analysis.
 
         Raises:
             ValueError: If variable name not found.
@@ -336,18 +391,94 @@ class MarginalEffectsCalculator:
         if variable_name not in self.model._feature_names:
             raise ValueError(f"Variable '{variable_name}' not found in model features.")
 
-        me = self.marginal_effect(variable_name)
+        if self._model_type == "DoubLogRegressionModel":
+            return self._detect_saturation_doublog(variable_name, x_range)
+        else:
+            # For Linear and SemiLog: constant effect
+            me = self.marginal_effect(variable_name)
+
+            return {
+                "variable": variable_name,
+                "marginal_effect": me,
+                "x_min": float(x_range.min()),
+                "x_max": float(x_range.max()),
+                "saturation_type": "linear",
+                "is_decreasing": me < 0,
+                "interpretation": (
+                    f"The model shows a constant marginal effect of {me:.4f}. "
+                    "No saturation is detected."
+                ),
+            }
+
+    def _detect_saturation_doublog(
+        self,
+        variable_name: str,
+        x_range: np.ndarray,
+    ) -> Dict[str, Union[float, int, str, bool]]:
+        """
+        Detect saturation point for double-log (power law) model.
+
+        Saturation point is defined as where ME becomes negligibly small
+        (< 1% of max ME in the range), indicating diminishing returns.
+
+        Args:
+            variable_name (str): Name of the variable.
+            x_range (np.ndarray): Range of x values to evaluate.
+
+        Returns:
+            Dict with saturation analysis.
+        """
+        idx = self.model._feature_names.index(variable_name)
+        beta = self.model.coef_[idx]
+
+        # Calculate ME at each point in x_range
+        # For double-log: ME(x) = β * y(x) / x
+        me_values = []
+        for x_val in x_range:
+            me = self._marginal_effect_doublog(variable_name, mean_value=x_val)
+            me_values.append(me)
+
+        me_values = np.array(me_values)
+
+        # Find saturation threshold (where ME < 1% of initial/max ME)
+        # For diminishing returns (β < 1), ME decreases as x increases
+        # So we look for where ME becomes negligibly small
+        
+        if len(me_values) > 0 and np.abs(me_values[0]) > 0:
+            # Use initial ME (at x_min) as reference
+            initial_me = np.abs(np.min(me_values))
+            threshold = initial_me  # 1% of initial ME
+
+            # Find first x where ME drops below threshold
+            below_threshold = np.abs(me_values) <= threshold
+
+            saturation_threshold_x = None
+            if below_threshold.any():
+                saturation_idx = np.argmax(below_threshold)
+                saturation_threshold_x = float(x_range[saturation_idx])
+        else:
+            initial_me = 0
+            threshold = 0
+            saturation_threshold_x = None
+
+        # Diminishing returns: check if β < 1 (in log-log space)
+        diminishing_returns = beta < 1 and beta > 0
 
         return {
             "variable": variable_name,
-            "marginal_effect": me,
+            "beta_coefficient": float(beta),
             "x_min": float(x_range.min()),
             "x_max": float(x_range.max()),
-            "saturation_type": "linear",
-            "is_decreasing": me < 0,
+            "saturation_type": "power_law",
+            "diminishing_returns": diminishing_returns,
+            "saturation_threshold_x": saturation_threshold_x,
+            "initial_marginal_effect": float(initial_me),
+            "threshold_definition": "1% of initial ME",
             "interpretation": (
-                f"The linear model shows a constant marginal effect of {me:.4f}. "
-                "No saturation is detected in the linear specification."
+                f"Power law model with β={beta:.4f}. "
+                f"{'Diminishing returns detected (β < 1). ' if diminishing_returns else ''}"
+                f"Saturation point "
+                f"{'at x≈' + f'{saturation_threshold_x:.2f}' if saturation_threshold_x else 'not reached in range'}."
             ),
         }
 
@@ -571,6 +702,185 @@ class SemiLogRegressionModel:
     def r_squared(self) -> float:
         """
         Get the R-squared value.
+
+        Returns:
+            float: R-squared value.
+        """
+        if self.results_ is None:
+            raise ValueError("Model must be fitted first.")
+        return self.results_.rsquared
+
+    def adjusted_r_squared(self) -> float:
+        """
+        Get the adjusted R-squared value.
+
+        Returns:
+            float: Adjusted R-squared value.
+        """
+        if self.results_ is None:
+            raise ValueError("Model must be fitted first.")
+        return self.results_.rsquared_adj
+
+    def summary(self) -> str:
+        """
+        Get a summary of the regression results.
+
+        Returns:
+            str: Summary statistics as a string.
+        """
+        if self.results_ is None:
+            raise ValueError("Model must be fitted first.")
+        return str(self.results_.summary())
+
+    def get_coefficients(self) -> pd.DataFrame:
+        """
+        Get coefficient estimates with standard errors and p-values.
+
+        Returns:
+            pd.DataFrame: Dataframe with coefficient, std error, t-stat, p-value.
+        """
+        if self.results_ is None:
+            raise ValueError("Model must be fitted first.")
+
+        coef_df = pd.DataFrame(
+            {
+                "Coefficient": self.results_.params,
+                "Std Error": self.results_.bse,
+                "t-statistic": self.results_.tvalues,
+                "p-value": self.results_.pvalues,
+            }
+        )
+        return coef_df
+
+
+class DoubLogRegressionModel:
+    """
+    Double-log (power law) regression model.
+
+    This model implements regression where both the target and explanatory
+    variables are log-transformed. The typical form is:
+
+        ln(y) = β₀ + β₁*ln(x₁) + β₂*ln(x₂) + ... + ε
+
+    Which expands to the power law form:
+
+        y = exp(β₀) * x₁^β₁ * x₂^β₂ * ...
+
+    For a single variable: y = a * x^β
+
+    Key properties:
+    - β is the elasticity (constant across the range)
+    - The marginal effect dy/dx = β * a * x^(β-1) is non-linear
+    - When 0 < β < 1, diminishing returns occur
+    - Saturation point can be detected when ME approaches zero
+
+    Attributes:
+        coef_ (np.ndarray): Estimated log-coefficients (excluding intercept).
+        intercept_ (float): Estimated log-intercept.
+        results_ (statsmodels.regression.linear_model.RegressionResults):
+            Full regression results from statsmodels.
+        X_train_ (pd.DataFrame): Training feature data (original scale).
+        y_train_ (pd.Series): Training target data (original scale).
+    """
+
+    def __init__(self) -> None:
+        """Initialize the double-log regression model."""
+        self.coef_: Optional[np.ndarray] = None
+        self.intercept_: Optional[float] = None
+        self.results_: Optional[sm.regression.linear_model.RegressionResults] = None
+        self.X_train_: Optional[pd.DataFrame] = None
+        self.y_train_: Optional[pd.Series] = None
+        self._feature_names: Optional[list] = None
+
+    def fit(
+        self,
+        X: Union[pd.DataFrame, np.ndarray],
+        y: Union[pd.Series, np.ndarray],
+    ) -> "DoubLogRegressionModel":
+        """
+        Fit the double-log regression model using OLS on log-transformed variables.
+
+        Args:
+            X (Union[pd.DataFrame, np.ndarray]): Features (n_samples, n_features).
+                Values must be positive for log transformation.
+            y (Union[pd.Series, np.ndarray]): Target values (n_samples,).
+                Values must be positive for log transformation.
+
+        Returns:
+            DoubLogRegressionModel: Fitted model instance.
+
+        Raises:
+            ValueError: If any X or y values are non-positive.
+        """
+        # Convert to pandas if necessary
+        if isinstance(X, np.ndarray):
+            X = pd.DataFrame(X)
+        if isinstance(y, np.ndarray):
+            y = pd.Series(y)
+
+        # Store original data
+        self.X_train_ = X.copy()
+        self.y_train_ = y.copy()
+        self._feature_names = list(X.columns)
+
+        # Check for non-positive values
+        if (X <= 0).any().any():
+            raise ValueError("All X values must be positive for log transformation.")
+        if (y <= 0).any():
+            raise ValueError("All y values must be positive for log transformation.")
+
+        # Log-transform both X and y
+        X_logged = np.log1p(X)
+        y_logged = np.log1p(y)
+
+        # Add constant for OLS
+        X_with_const = sm.add_constant(X_logged)
+
+        # Fit OLS model
+        self.results_ = sm.OLS(y_logged, X_with_const).fit()
+
+        # Extract coefficients
+        self.intercept_ = self.results_.params.iloc[0]
+        self.coef_ = self.results_.params.iloc[1:].values
+
+        return self
+
+    def predict(self, X: Union[pd.DataFrame, np.ndarray]) -> np.ndarray:
+        """
+        Make predictions using the fitted double-log model.
+
+        Args:
+            X (Union[pd.DataFrame, np.ndarray]): Features (n_samples, n_features).
+
+        Returns:
+            np.ndarray: Predicted values.
+        """
+        if self.results_ is None:
+            raise ValueError("Model must be fitted before making predictions.")
+
+        if isinstance(X, np.ndarray):
+            X = pd.DataFrame(X)
+
+        # Log-transform features
+        X_logged = np.log(X)
+        # Convert DataFrame to ndarray for statsmodels compatibility
+        X_logged_array = (
+            X_logged.values if isinstance(X_logged, pd.DataFrame) else X_logged
+        )
+
+        # Ensure 2D shape (single column DataFrames become 1D arrays)
+        if X_logged_array.ndim == 1:
+            X_logged_array = X_logged_array.reshape(-1, 1)
+
+        X_with_const = sm.add_constant(X_logged_array)
+
+        # Predict log(y), then exponentiate to get y
+        log_predictions = self.results_.predict(X_with_const).values
+        return np.exp(log_predictions)
+
+    def r_squared(self) -> float:
+        """
+        Get the R-squared value for the log-log model.
 
         Returns:
             float: R-squared value.

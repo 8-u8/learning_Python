@@ -6,17 +6,14 @@ This script provides a comprehensive overview of the implemented functionality.
 """
 
 import sys
-from pathlib import Path
-
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 import numpy as np
 import pandas as pd
 
 # Import all models
 try:
-    from regression import (
+    from src.regression import (
+        DoubLogRegressionModel,
         GAMRegressionModel,
         LinearRegressionModel,
         MarginalEffectsCalculator,
@@ -49,7 +46,9 @@ def main():
     print("=" * 80)
 
     linear = LinearRegressionModel()
-    linear.fit(df[["x"]], df["y"])
+    reg_x = df[["x"]]
+    reg_y = df["y"]
+    linear.fit(X=reg_x, y=reg_y)
 
     print(f"R² = {linear.r_squared():.6f}")
 
@@ -101,7 +100,55 @@ def main():
     print(f"\nElasticity (at mean) = {elasticity_gam:.6f}")
 
     print("\n" + "=" * 80)
-    print("4. Model Comparison Summary")
+    print("4. Double-Log Model (Power Law) - Saturation Point Detection")
+    print("=" * 80)
+
+    # Double-log data with diminishing returns
+    np.random.seed(555)
+    n = 150
+    x_doublog = np.linspace(10, 500, n)
+    y_doublog = 100 * (x_doublog**0.7) + np.random.normal(0, 100, n)
+
+    df_doublog = pd.DataFrame({"y": y_doublog, "x": x_doublog})
+
+    doublog = DoubLogRegressionModel()
+    doublog.fit(df_doublog[["x"]], df_doublog["y"])
+
+    print(f"R² = {doublog.r_squared():.6f}")
+
+    doublog_calc = MarginalEffectsCalculator(doublog)
+
+    # Get coefficients
+    coef = doublog.get_coefficients()
+    beta = coef.loc[0, "Coefficient"]
+
+    print(f"\nElasticity (Beta): {beta:.4f}")
+    print("Interpretation: Power law relationship y = a * x^β")
+
+    # Marginal effects at different points
+    print("\nMarginal Effects at Different X Values:")
+    print("(Showing diminishing returns)")
+
+    for x_val in [50, 150, 300]:
+        me = doublog_calc.marginal_effect("x", mean_value=x_val)
+        print(f"  x = {x_val:3d}: ME = {me:.6f} (declining effect)")
+
+    # Saturation point detection
+    x_range = np.linspace(df_doublog["x"].min(), df_doublog["x"].max(), 100)
+    sat_info = doublog_calc.detect_saturation_point("x", x_range)
+
+    print(f"\nSaturation Point Analysis:")
+    print(f"  Diminishing Returns: {sat_info['diminishing_returns']}")
+
+    if sat_info["saturation_threshold_x"] is not None:
+        print(f"  Saturation at x ≈ {sat_info['saturation_threshold_x']:.2f}")
+    else:
+        print(f"  Saturation: Not reached in range")
+
+    print(f"  Interpretation: {sat_info['interpretation']}")
+
+    print("\n" + "=" * 80)
+    print("5. Model Comparison Summary")
     print("=" * 80)
 
     print(f"{'Model':<20} {'R²':<15} {'Notes'}")
@@ -111,11 +158,14 @@ def main():
         f"{'Semi-Log':<20} {semilog.r_squared():<15.6f} {'Best fit (log relationship)'}"
     )
     print(
+        f"{'Double-Log':<20} {doublog.r_squared():<15.6f} {'Power law, diminishing returns'}"
+    )
+    print(
         f"{'GAM':<20} {gam.r_squared():<15.6f} {'Most flexible, captures nonlinearity'}"
     )
 
     print("\n" + "=" * 80)
-    print("5. Key Features Summary")
+    print("6. Key Features Summary")
     print("=" * 80)
 
     features = {
@@ -133,6 +183,11 @@ def main():
             "✓ Nonlinear relationships",
             "✓ Varying marginal effects",
             "✓ Detects diminishing returns",
+        ],
+        "DoubLogRegressionModel": [
+            "✓ Power law relationships",
+            "✓ Elasticity interpretation via Beta",
+            "✓ Saturation point detection",
         ],
     }
 

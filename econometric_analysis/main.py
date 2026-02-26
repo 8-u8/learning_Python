@@ -14,7 +14,11 @@ import pandas as pd
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from regression import LinearRegressionModel, MarginalEffectsCalculator
+from regression import (
+    DoubLogRegressionModel,
+    LinearRegressionModel,
+    MarginalEffectsCalculator,
+)
 
 
 def main() -> None:
@@ -90,6 +94,53 @@ def main() -> None:
             print(f"  {key}: {value:.6f}")
         else:
             print(f"  {key}: {value}")
+
+    # 両対数モデルのデモ
+    print("\n" + "=" * 70)
+    print("【両対数モデル - 飽和点検出デモ】")
+    print("=" * 70)
+
+    # 両対数データの生成（べき乗法則）
+    np.random.seed(123)
+    n = 150
+    marketing_budget = np.linspace(50, 1000, n)
+    revenue = 100000 * (marketing_budget**0.65) + np.random.normal(0, 50000, n)
+
+    df_doublog = pd.DataFrame({"Revenue": revenue, "Marketing": marketing_budget})
+
+    # 両対数モデルの推定
+    doublog_model = DoubLogRegressionModel()
+    doublog_model.fit(df_doublog[["Marketing"]], df_doublog["Revenue"])
+
+    print("\n【推定結果】")
+    print(f"R² = {doublog_model.r_squared():.6f}")
+
+    # 限界効果と飽和点
+    doublog_calc = MarginalEffectsCalculator(doublog_model)
+
+    print("\n【異なるマーケティング予算での限界効果】")
+    print("（効果が減少する逓減効果を確認できます）")
+
+    for budget in [100, 300, 700]:
+        me = doublog_calc.marginal_effect("Marketing", mean_value=budget)
+        print(f"  予算${budget:3d}千円: 限界効果=${me:10,.2f}")
+
+    # 飽和点検出
+    x_range = np.linspace(
+        df_doublog["Marketing"].min(), df_doublog["Marketing"].max(), 100
+    )
+    saturation = doublog_calc.detect_saturation_point("Marketing", x_range)
+
+    print("\n【飽和点分析】")
+    print(f"  Beta係数（弾力性）: {saturation['beta_coefficient']:.4f}")
+    print(f"  逓減効果あり: {saturation['diminishing_returns']}")
+
+    if saturation["saturation_threshold_x"] is not None:
+        print(f"  飽和点（実務的なゼロ）: ${saturation['saturation_threshold_x']:,.0f}")
+    else:
+        print(f"  飽和点（実務的なゼロ）: 範囲内で未検出（{saturation['saturation_threshold_x']}）")
+
+    print(f"\n  解釈: {saturation['interpretation']}")
 
     print("\n" + "=" * 70)
     print("デモンストレーション完了!")
