@@ -20,7 +20,6 @@ from regression import (
     LinearRegressionModel,
     MarginalEffectsCalculator,
 )
-
 # %%
 def main() -> None:
     """Run a simple demonstration of the regression analysis."""
